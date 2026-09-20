@@ -1,0 +1,146 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ENUMS 
+
+enum ContactEndpointType {
+  PHONE
+}
+
+enum communicationCallStatus {
+  INCOMING
+  CONNECTED
+  COMPLETED
+  MISSED
+}
+
+enum CommunicationSessionStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+}
+
+// DATABASE TABLES
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String
+  mobileNumber String   @unique
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  contactEndpoint ContactEndpoint?
+  resources       Resource[]
+}
+
+model ContactEndpoint {
+  id          String              @id @default(uuid()) @db.Uuid
+  userId      String              @unique @db.Uuid
+  type        ContactEndpointType
+  phoneNumber String
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  communicationSessions CommunicationSession[]
+}
+
+model Resource {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  name      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  contactLinks          ContactLink[]
+  communicationSessions CommunicationSession[]
+}
+
+model ContactLink {
+  id         String   @id @default(uuid()) @db.Uuid
+  resourceId String   @db.Uuid
+  token      String   @unique
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+
+  communicationSessions CommunicationSession[]
+}
+
+model CommunicationSession {
+  id                   String @id @default(uuid()) @db.Uuid
+  reference            String @unique
+  resourceId           String @db.Uuid
+  contactLinkId        String @db.Uuid
+  contactEndpointId    String @db.Uuid
+  contactorPhoneNumber String
+
+  status    CommunicationSessionStatus @default(PENDING)
+  expiresAt DateTime?
+  endedAt   DateTime?
+
+  provider  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  resource        Resource        @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  contactLink     ContactLink     @relation(fields: [contactLinkId], references: [id], onDelete: Restrict)
+  contactEndpoint ContactEndpoint @relation(fields: [contactEndpointId], references: [id], onDelete: Restrict)
+
+  calls CommunicationCall[]
+
+  @@index([resourceId])
+  @@index([contactLinkId])
+  @@index([contactEndpointId])
+}
+
+model CommunicationCall {
+  id        String @id @default(uuid()) @db.Uuid
+  sessionId String @db.Uuid
+  callSid   String @unique
+
+  caller         String
+  callee         String
+  direction      String?
+  status         communicationCallStatus
+  providerStatus String?
+
+  duractionSec Int?
+  incomingAt   DateTime?
+  connectedAt  DateTime?
+  endedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  session CommunicationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+}
+
+model EdesyWebhookEvent {
+  id        String  @id @default(uuid()) @db.Uuid
+  event     String
+  reference String?
+  callSid   String?
+  payload   Json
+
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  error       String?
+
+  @@index([reference])
+  @@index([callSid])
+}
