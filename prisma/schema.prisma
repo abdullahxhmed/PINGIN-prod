@@ -25,6 +25,11 @@ enum CommunicationSessionStatus {
   EXPIRED
 }
 
+enum OtpPurpose {
+  SIGNUP
+  LOGIN
+}
+
 // DATABASE TABLES
 
 model User {
@@ -68,7 +73,7 @@ model Resource {
 
 model ContactLink {
   id         String   @id @default(uuid()) @db.Uuid
-  resourceId String   @db.Uuid
+  resourceId String   @unique @db.Uuid
   token      String   @unique
   active     Boolean  @default(true)
   createdAt  DateTime @default(now())
@@ -143,4 +148,15 @@ model EdesyWebhookEvent {
 
   @@index([reference])
   @@index([callSid])
+}
+
+model OtpVerification {
+  id           String     @id @default(uuid()) @db.Uuid
+  mobileNumber String
+  otpHash      String
+  purpose      OtpPurpose
+  expiresAt    DateTime
+  attempts     Int        @default(0)
+  usedAt       DateTime?
+  createdAt    DateTime   @default(now())
 }

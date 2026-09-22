@@ -9,3 +9,5 @@ node_modules
 .cursor
 .devin
 .windsurf
+
+dist/
