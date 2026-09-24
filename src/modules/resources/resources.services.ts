@@ -1,16 +1,58 @@
-import { Prisma } from "@prisma/client";
+import { ResourceType } from "@prisma/client";
 import { randomBytes } from "crypto";
-import { ConflictError, NotFoundError } from "../../errors/AppError.js";
+import { InternalError, NotFoundError } from "../../errors/AppError.js";
 import { prisma } from "../../lib/prisma.js";
+import { buildContactUrl } from "../public-contact/contact.services.js";
 
-const createResource = async (userId:string,name: string) => {
-    const resource = await prisma.resource.create({
-        data:{
-            userId,
-            name,
-        }
-    })
-    return resource;
+type vehicleDetailsInput = {
+    registrationNum?:string;
+    vehicleColour?:string;
+}
+
+const createResource = async (userId:string,name: string, type: ResourceType, vehicleDetails?:vehicleDetailsInput) => {
+
+    const token = randomBytes(32).toString("hex");
+
+    try{
+        const {resource, contactLink, vehicle} = await prisma.$transaction(async (tx) => {
+            console.log("TRANSACTION STARTED");
+            const resource = await tx.resource.create({
+                data: {
+                    userId,
+                    name,
+                    type
+                }
+            });
+
+            const contactLink = await tx.contactLink.create({
+                data: {
+                    resourceId: resource.id,
+                    token: token
+                }
+            });
+            console.log("contact link created");
+            let vehicle = null;
+            if(type === "VEHICLE" && vehicleDetails){
+                vehicle = await tx.vehicleDetail.create({
+                    data: {
+                        resourceId: resource.id,
+                        registrationNum: vehicleDetails.registrationNum ?? null,
+                        vehicleColour: vehicleDetails.vehicleColour ?? null,
+                    }
+                });
+            }
+            return {resource, contactLink, vehicle};
+        })
+            
+        const contactUrl = buildContactUrl(contactLink.token);
+        return {resource, contactUrl, vehicle};
+
+    }
+    catch(err){
+        console.log(err);
+        throw new InternalError("Something went wrong, Please Try again.");
+    }
+  
 }
 
 const getResources = async (userId:string) => {
@@ -18,11 +60,19 @@ const getResources = async (userId:string) => {
         where:{
             userId,
             active: true
+        },
+        include: {
+            contactLink: true
         }
     });
     if(!resources)
-        throw new NotFoundError("Resources not found!")
-    return resources;
+        throw new NotFoundError("Resources not found!");
+
+    return resources.map((resource) => ({
+        id: resource.id,
+        name: resource.name,
+        contactUrl: buildContactUrl(resource.contactLink!.token)
+    }))
 }
 
 
@@ -32,11 +82,18 @@ const getResourceById = async (resourceId: string, userId: string) => {
             id: resourceId,
             userId,
             active: true,
+        },
+        include: {
+            contactLink: true
         }
     })
     if(!resource)
         throw new NotFoundError("Resource not found")
-    return resource;
+    return {
+        id: resource.id,
+        name: resource.name,
+        contactUrl: buildContactUrl(resource.contactLink!.token)
+    }
 }
 
 const modifyResourceById = async (resourceId : string, userId: string, updateVal:string) => {
@@ -50,63 +107,40 @@ const modifyResourceById = async (resourceId : string, userId: string, updateVal
             name : updateVal
         }
     })
-    return updatedResource;
+    return {
+        id: updatedResource.id,
+        name: updatedResource.name
+    };
 }
 
 const deleteResourceById = async (
     resourceId: string,
      userId: string,
     ) => {
-        const deletedResource = await prisma.resource.update({
-            where: {
-                id: resourceId,
-                userId,
-                active: true
-            },
-            data: {
-                active: false  //soft delete no active deletes
-            }
-        })
-        return deletedResource;
+        try{
+            await prisma.resource.update({
+                where: {
+                    id: resourceId,
+                    userId,
+                    active: true
+                },
+                data: {
+                    active: false  //soft delete no active deletes
+                }
+            })
+            console.log("Deleted Resource");
+        }
+        catch(err){
+            throw new Error;
+        }
+
     }
 
 
 
-const createContactLink = async (resourceId : string, userId: string) => {
-    const token = randomBytes(32).toString("hex");
-    const existingContactLink = await prisma
 
-    const resource = await prisma.resource.findFirst({
-        where:{
-            id: resourceId,
-            userId,
-            active: true
-        }
-    })
-    if(!resource)
-        throw new NotFoundError("Resource not found");
-
-    try{
-        const contactLink = await prisma.contactLink.create({
-        data: {
-            resourceId,
-            token
-        }
-        });
-        return contactLink;
-    }
-    catch(error){
-        if (
-            error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002"
-        ){
-            throw new ConflictError("Resource already has a contact link");
-        }
-        throw error;
-    }
-
-}
 
 
 export {
-    createContactLink, createResource, deleteResourceById, getResourceById, getResources, modifyResourceById
+    createResource, deleteResourceById, getResourceById, getResources, modifyResourceById
 };

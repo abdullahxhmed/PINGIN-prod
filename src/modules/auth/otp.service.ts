@@ -6,6 +6,18 @@ import {OtpPurpose} from "@prisma/client"
 
 
 const requestOtp = async (mobileNumber: string, purpose: OtpPurpose) => {
+    //Invalidate previous OTPs
+    await prisma.otpVerification.updateMany({
+        where: {
+            mobileNumber,
+            purpose,
+            usedAt: null,
+        },
+        data: {
+            usedAt: new Date(),
+        },
+    });
+    //then create new otp
     const otp = generateOtp();
 
     const otpHash = await argon2.hash(otp);
@@ -25,22 +37,28 @@ const requestOtp = async (mobileNumber: string, purpose: OtpPurpose) => {
 }
 
 const verifyOtp = async (mobileNumber:string, otp:string, purpose: OtpPurpose) => {
+    console.log({
+        mobileNumber,
+        otp,
+        purpose
+    });
+
     const otpRecord = await prisma.otpVerification.findFirst({
         where: {
             mobileNumber,
             purpose,
             usedAt: null,
+            expiresAt: {
+                gt: new Date()
+            }
         }
     })
-    const now = new Date();
+    console.log(otpRecord);
 
-    if(otpRecord?.expiresAt! <= now){
-        throw new ForbiddenError("OTP has expired")
+    if(!otpRecord){
+        throw new ForbiddenError("Invalid or expired OTP");
     }
-    if(!otpRecord?.otpHash){
-        throw new Error;
-    }
-    
+
     const valid = await argon2.verify(
         otpRecord.otpHash,
         otp

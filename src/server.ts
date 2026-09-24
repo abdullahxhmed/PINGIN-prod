@@ -1,21 +1,31 @@
-import express from "express";
 import dotenv from "dotenv";
+import express from "express";
 import errorHandler from "./middleware/errorHandler.js";
-import userRoutes from "./modules/users/users.routes.js"
-import resourceRoutes from "./modules/resources/resources.routes.js"
-import contactRoutes from "./modules/public-contact/contact.routes.js"
-import authRoutes from "./modules/auth/auth.routes.js";
 import { authenticateRequest } from "./modules/auth/auth.middleware.js";
-
+import authRoutes from "./modules/auth/auth.routes.js";
+import contactRoutes from "./modules/public-contact/contact.routes.js";
+import resourceRoutes from "./modules/resources/resources.routes.js";
+import userRoutes from "./modules/users/users.routes.js";
+import cookieParser from "cookie-parser";
+import vehicleRoutes from "./modules/vehicle-details/vehicleDetail.routes.js"
 dotenv.config();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 const app = express();
 
-app.use(express.json());
+app.use(
+  express.json({
+    limit: "100kb",
+    verify: (req, _res, buf) => {
+      req.rawBody = Buffer.from(buf);
+    },
+  })
+);
+app.use(cookieParser());
 
 app.use('/api/users', userRoutes);
 app.use('/api/resources', authenticateRequest, resourceRoutes);
+app.use('/api/vehicle-details', vehicleRoutes);
 app.use('/api/contact', contactRoutes)
 app.use('/api/auth', authRoutes);
 

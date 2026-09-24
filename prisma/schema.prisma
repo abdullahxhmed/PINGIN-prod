@@ -13,6 +13,7 @@ enum ContactEndpointType {
 }
 
 enum communicationCallStatus {
+  INITIATED
   INCOMING
   CONNECTED
   COMPLETED
@@ -30,18 +31,33 @@ enum OtpPurpose {
   LOGIN
 }
 
+enum CommunicationSessionType {
+  CALL
+  ALERT
+  MESSAGE
+}
+
+enum ResourceType{
+  VEHICLE
+  PROPERTY
+  EQUIPMENT
+  OTHER
+}
+
 // DATABASE TABLES
 
 model User {
   id           String   @id @default(uuid()) @db.Uuid
   name         String
   mobileNumber String   @unique
+  passwordHash String?
   active       Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   contactEndpoint ContactEndpoint?
   resources       Resource[]
+  refreshTokens   RefreshToken[]
 }
 
 model ContactEndpoint {
@@ -62,15 +78,26 @@ model Resource {
   userId    String   @db.Uuid
   name      String
   active    Boolean  @default(true)
+  type ResourceType
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Restrict)
 
-  contactLinks          ContactLink[]
+  contactLink           ContactLink?
   communicationSessions CommunicationSession[]
+  vehicleDetail VehicleDetail?
 }
 
+
+model VehicleDetail {
+  id String @id @default(uuid()) @db.Uuid
+  resourceId String @db.Uuid @unique
+  registrationNum String?
+  vehicleColour String?
+
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+}
 model ContactLink {
   id         String   @id @default(uuid()) @db.Uuid
   resourceId String   @unique @db.Uuid
@@ -88,6 +115,7 @@ model CommunicationSession {
   id                   String @id @default(uuid()) @db.Uuid
   reference            String @unique
   resourceId           String @db.Uuid
+  type CommunicationSessionType 
   contactLinkId        String @db.Uuid
   contactEndpointId    String @db.Uuid
   contactorPhoneNumber String
@@ -122,7 +150,7 @@ model CommunicationCall {
   status         communicationCallStatus
   providerStatus String?
 
-  duractionSec Int?
+  durationSec Int?
   incomingAt   DateTime?
   connectedAt  DateTime?
   endedAt      DateTime?
@@ -159,4 +187,17 @@ model OtpVerification {
   attempts     Int        @default(0)
   usedAt       DateTime?
   createdAt    DateTime   @default(now())
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }

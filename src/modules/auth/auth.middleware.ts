@@ -10,16 +10,25 @@ const authenticateRequest = async (req: Request, res: Response, next: NextFuncti
 
     const tokenBearer = authHeader.slice(7);
 
-    const payload = jwt.verify(tokenBearer, process.env.JWT_SECRET!);
-
-    if(
-        typeof payload !== "object" ||
-        !payload ||
-        typeof payload.sub !== "string"
-    ){
-        throw new UnauthorizedError("Payload error");
+    let payload:any 
+    
+    try{
+        payload = jwt.verify(tokenBearer, process.env.JWT_SECRET!);
+    }
+    catch(err:any){
+        if(err.name === "TokenExpiredError"){
+            throw new UnauthorizedError("jwt expired");
+        }
+        throw new UnauthorizedError("Invalid token");
     }
 
+    if(
+            typeof payload !== "object" ||
+            !payload ||
+            typeof payload.sub !== "string"
+        ){
+            throw new UnauthorizedError("Payload error");
+        }
     req.user = {
         id: payload.sub
     }

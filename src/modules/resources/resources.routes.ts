@@ -1,5 +1,5 @@
 import express from "express";
-import { createContactLinkController, createResourceController, getResourceByIdController, getResourceController, modifyResourceByIdController } from "./resources.controllers.js";
+import { createResourceController, getResourceByIdController, getResourceController, modifyResourceByIdController } from "./resources.controllers.js";
 import { deleteResourceByIdController } from "./resources.controllers.js";
 
 
@@ -17,9 +17,9 @@ router
     .patch(modifyResourceByIdController)
     .delete(deleteResourceByIdController);
 
-router
-    .route('/:id/contact-link')
-    .post(createContactLinkController);
+// router
+//     .route('/:id/contact-link')
+//     .post(createContactLinkController);
 
 
 export default router

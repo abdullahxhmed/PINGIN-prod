@@ -1,15 +1,15 @@
 import express from "express"
-import { requestSignupOtpController, verifySignupController } from "../auth.controllers.js";
+import { authControllers } from "../auth.controllers.js";
 
 const signupRouter = express.Router();
 
 signupRouter
     .route("/request-otp")
-    .post(requestSignupOtpController);
+    .post(authControllers.requestSignupOtpController);
 
 signupRouter
     .route("/verify-otp")
-    .post(verifySignupController);
+    .post(authControllers.verifySignupController);
 
 
 export default signupRouter

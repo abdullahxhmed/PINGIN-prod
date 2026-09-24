@@ -1,5 +1,8 @@
-import { NotFoundError } from "../../errors/AppError.js";
+import { AppError, InternalError, NotFoundError } from "../../errors/AppError.js";
 import {prisma} from "../../lib/prisma.js"
+import {CommunicationSessionType} from "@prisma/client";
+import crypto from "crypto"
+import { edesyService } from "../../integrations/edesy.service.js";
 
 const getContact = async (contactToken: string) => {
     const contactDetails = await prisma.contactLink.findUnique({
@@ -11,6 +14,7 @@ const getContact = async (contactToken: string) => {
             }
         },
         select:{
+            id: true,
             resource:{
                 select:{
                     name:true
@@ -22,11 +26,90 @@ const getContact = async (contactToken: string) => {
         throw new NotFoundError("Resource not found");
 
     return {
+        id:contactDetails.id,
         name: contactDetails.resource.name
     };
 }
 
+function buildContactUrl(token: string) {
+  return `${process.env.PUBLIC_APP_URL}/contact/${token}`;
+}
+
+
+const createCommunicationSession = async (
+    token: string,
+    type: CommunicationSessionType,
+    visitorPhoneNumber: string,
+) => {
+    try{
+        const contactLink = await prisma.contactLink.findFirst({
+            where:{
+                token,
+                active:true,
+                resource: {
+                    active:true
+                },
+            },
+            select:{
+                id:true,
+                resourceId: true,
+                resource: {
+                    select: {
+                        id: true,
+                        user: {
+                            select:{
+                                contactEndpoint:{
+                                    select: {
+                                        id:true,
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+
+    });
+    if(!contactLink){
+        throw new NotFoundError("Contact link not found");
+    }
+
+    const contactEndpoint = contactLink.resource.user.contactEndpoint;
+
+    if(!contactEndpoint){
+        throw new InternalError("Contact endpoint not configured");
+    }
+    const session = await prisma.communicationSession.create({
+        data: {
+            reference: generateReference(),
+            resourceId: contactLink.resourceId,
+            contactLinkId: contactLink.id,
+            contactEndpointId: contactEndpoint.id,
+            contactorPhoneNumber: visitorPhoneNumber,
+            type,
+            status: "PENDING",
+        },
+    })
+    return session;
+  
+    }
+    catch(err){
+        if(err instanceof AppError){
+            throw err;
+        }
+        throw new InternalError("could not create session, please try again");
+    }
+}
+
+
+function generateReference(){
+    return `PK-${crypto.randomBytes(8).toString("hex")}`
+}
+
 
 export {
-    getContact
+    getContact,
+    buildContactUrl,
+    generateReference,
+    createCommunicationSession
 }

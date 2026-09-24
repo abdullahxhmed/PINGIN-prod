@@ -43,3 +43,9 @@ export class ConflictError extends AppError {
         super(message, 409);
     }
 }
+
+export class InternalError extends AppError {
+    constructor(message: string) {
+        super(message, 500);
+    }
+}

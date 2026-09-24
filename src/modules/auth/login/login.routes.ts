@@ -1,14 +1,18 @@
 import {Router} from "express";
-import { requestLoginOtpController, verifyLoginController } from "../auth.controllers.js";
+import { authControllers } from "../auth.controllers.js";
 
 const loginRouter = Router();
 
 loginRouter
     .route("/request-otp")
-    .post(requestLoginOtpController)
+    .post(authControllers.requestLoginOtpController)
 
 loginRouter
     .route("/verify-otp")
-    .post(verifyLoginController);
+    .post(authControllers.verifyLoginOtpController);
+
+loginRouter
+    .route("/verify")
+    .post(authControllers.verifyLoginPassController);
 
 export default loginRouter;
