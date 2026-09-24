@@ -14,6 +14,7 @@ const PORT = process.env.PORT || 8080;
 const app = express();
 import cors from "cors";
 
+//builds working
 app.use(
   cors({
     origin: [
