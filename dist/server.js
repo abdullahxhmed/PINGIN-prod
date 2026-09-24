@@ -16,6 +16,7 @@ app.use(cors({
     origin: [
         "https://pingin.co.in",
         "https://www.pingin.co.in",
+        "http://localhost:5173"
     ],
     credentials: true,
 }));
