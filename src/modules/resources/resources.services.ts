@@ -12,10 +12,8 @@ type vehicleDetailsInput = {
 const createResource = async (userId:string,name: string, type: ResourceType, vehicleDetails?:vehicleDetailsInput) => {
 
     const token = randomBytes(32).toString("hex");
-
     try{
         const {resource, contactLink, vehicle} = await prisma.$transaction(async (tx) => {
-            console.log("TRANSACTION STARTED");
             const resource = await tx.resource.create({
                 data: {
                     userId,
@@ -30,7 +28,6 @@ const createResource = async (userId:string,name: string, type: ResourceType, ve
                     token: token
                 }
             });
-            console.log("contact link created");
             let vehicle = null;
             if(type === "VEHICLE" && vehicleDetails){
                 vehicle = await tx.vehicleDetail.create({
@@ -62,6 +59,7 @@ const getResources = async (userId:string) => {
             active: true
         },
         include: {
+            vehicleDetail: true,
             contactLink: true
         }
     });
@@ -71,7 +69,11 @@ const getResources = async (userId:string) => {
     return resources.map((resource) => ({
         id: resource.id,
         name: resource.name,
-        contactUrl: buildContactUrl(resource.contactLink!.token)
+        contactUrl: buildContactUrl(resource.contactLink!.token),
+        vehicleDetails:{
+            registrationNum: resource.vehicleDetail?.registrationNum,
+            vehicleColour: resource.vehicleDetail?.vehicleColour
+        }
     }))
 }
 
@@ -84,7 +86,8 @@ const getResourceById = async (resourceId: string, userId: string) => {
             active: true,
         },
         include: {
-            contactLink: true
+            contactLink: true,
+            vehicleDetail:true
         }
     })
     if(!resource)
@@ -92,7 +95,11 @@ const getResourceById = async (resourceId: string, userId: string) => {
     return {
         id: resource.id,
         name: resource.name,
-        contactUrl: buildContactUrl(resource.contactLink!.token)
+        contactUrl: buildContactUrl(resource.contactLink!.token),
+        vehicleDetails:{
+            registrationNum: resource.vehicleDetail?.registrationNum,
+            vehicleColour: resource.vehicleDetail?.vehicleColour
+        }
     }
 }
 
