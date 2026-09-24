@@ -11,6 +11,14 @@ import vehicleRoutes from "./modules/vehicle-details/vehicleDetail.routes.js";
 dotenv.config();
 const PORT = process.env.PORT || 8080;
 const app = express();
+import cors from "cors";
+app.use(cors({
+    origin: [
+        "https://pingin.co.in",
+        "https://www.pingin.co.in",
+    ],
+    credentials: true,
+}));
 app.use(express.json({
     limit: "100kb",
     verify: (req, _res, buf) => {

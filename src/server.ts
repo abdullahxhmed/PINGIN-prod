@@ -12,6 +12,17 @@ dotenv.config();
 const PORT = process.env.PORT || 8080;
 
 const app = express();
+import cors from "cors";
+
+app.use(
+  cors({
+    origin: [
+      "https://pingin.co.in",
+      "https://www.pingin.co.in",
+    ],
+    credentials: true,
+  })
+);
 
 app.use(
   express.json({
