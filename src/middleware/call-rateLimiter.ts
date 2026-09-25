@@ -3,7 +3,7 @@ import redis from "../lib/redis.js";
 import { TooManyRequestsError } from "../errors/AppError.js";
 
 
-const COOLDOWN_SECONDS = 5 * 60;
+const COOLDOWN_SECONDS = 2 * 60;
 const WINDOW_SECONDS = 60 * 60;
 
 const LINK_LIMIT = 5;
