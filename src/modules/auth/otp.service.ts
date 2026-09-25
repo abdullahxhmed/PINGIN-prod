@@ -3,6 +3,7 @@ import generateOtp from "../../utils/otp.js"
 import argon2 from "argon2"
 import { ForbiddenError, BadRequestError } from "../../errors/AppError.js"
 import {OtpPurpose} from "@prisma/client"
+import hanuOtpService from "../../integrations/hanu-otp.service.js"
 
 
 const requestOtp = async (mobileNumber: string, purpose: OtpPurpose) => {
@@ -31,8 +32,11 @@ const requestOtp = async (mobileNumber: string, purpose: OtpPurpose) => {
             purpose
         }
     })
-
-    console.log(`OTP for ${mobileNumber}: ${otp}`);
+     await hanuOtpService.sendOtp(
+        mobileNumber,
+        otp
+    );
+    // console.log(`OTP for ${mobileNumber}: ${otp}`);  
 
 }
 

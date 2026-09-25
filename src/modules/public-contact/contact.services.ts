@@ -42,49 +42,14 @@ const createCommunicationSession = async (
     visitorPhoneNumber: string,
 ) => {
     try{
-        const contactLink = await prisma.contactLink.findFirst({
-            where:{
-                token,
-                active:true,
-                resource: {
-                    active:true
-                },
-            },
-            select:{
-                id:true,
-                resourceId: true,
-                resource: {
-                    select: {
-                        id: true,
-                        user: {
-                            select:{
-                                contactEndpoint:{
-                                    select: {
-                                        id:true,
-                                    },
-                                },
-                            },
-                        },
-                    },
-                },
-            },
+        const contact = await getCommunicationContact(token);
 
-    });
-    if(!contactLink){
-        throw new NotFoundError("Contact link not found");
-    }
-
-    const contactEndpoint = contactLink.resource.user.contactEndpoint;
-
-    if(!contactEndpoint){
-        throw new InternalError("Contact endpoint not configured");
-    }
     const session = await prisma.communicationSession.create({
         data: {
             reference: generateReference(),
-            resourceId: contactLink.resourceId,
-            contactLinkId: contactLink.id,
-            contactEndpointId: contactEndpoint.id,
+            resourceId: contact.resourceId,
+            contactLinkId: contact.contactLinkId,
+            contactEndpointId: contact.contactEndpointId,
             contactorPhoneNumber: visitorPhoneNumber,
             type,
             status: "PENDING",
@@ -102,6 +67,58 @@ const createCommunicationSession = async (
 }
 
 
+
+const getCommunicationContact = async (token: string) => {
+    const contactLink = await prisma.contactLink.findFirst({
+        where: {
+            token,
+            active: true,
+            resource: {
+                active: true,
+            },
+        },
+        select: {
+            id: true,
+            resourceId: true,
+            resource: {
+                select: {
+                    user: {
+                        select: {
+                            contactEndpoint: {
+                                select: {
+                                    id: true,
+                                    phoneNumber:true
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    });
+
+    if (!contactLink) {
+        throw new NotFoundError("Contact link not found");
+    }
+
+    const contactEndpoint =
+        contactLink.resource.user.contactEndpoint;
+
+    if (!contactEndpoint) {
+        throw new InternalError(
+            "Contact endpoint not configured"
+        );
+    }
+
+    return {
+        contactLinkId: contactLink.id,
+        resourceId: contactLink.resourceId,
+        contactEndpointId: contactEndpoint.id,
+        contactEndpointPhoneNumber: contactEndpoint.phoneNumber
+    };
+};
+
+
 function generateReference(){
     return `PK-${crypto.randomBytes(8).toString("hex")}`
 }
@@ -111,5 +128,6 @@ export {
     getContact,
     buildContactUrl,
     generateReference,
-    createCommunicationSession
+    createCommunicationSession,
+    getCommunicationContact
 }

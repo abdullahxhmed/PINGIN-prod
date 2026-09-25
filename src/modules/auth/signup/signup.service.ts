@@ -3,22 +3,23 @@ import { ConflictError } from "../../../errors/AppError.js"
 import { prisma } from "../../../lib/prisma.js"
 import { createAccessToken, generateRefreshToken } from "../auth.services.js"
 import { otpService } from "../otp.service.js"
+import { checkOtpRateLimit } from "../../../middleware/otp-rateLimiter.js";
 import argon2 from "argon2"
 
-const requestSignupOtp = async (mobileNo:string) => {
+const requestSignupOtp = async (mobileNo:string, ip:string) => {
     const user = await prisma.user.findUnique({
         where: {
             mobileNumber: mobileNo
         }
     })
-    if(!user){
-        return await otpService.requestOtp(
+    if(user){
+        throw new ConflictError("User already Exists");
+    }
+    await checkOtpRateLimit(mobileNo, ip)
+     return await otpService.requestOtp(
             mobileNo,
             OtpPurpose.SIGNUP
         )
-    }
-    else
-        throw new ConflictError("User already Exists");
 }
 
 const verifySignup = async (mobileNo: string,password:string, otp: string, userName: string) => {
@@ -54,7 +55,7 @@ const verifySignup = async (mobileNo: string,password:string, otp: string, userN
 
             return {user, contactEndpoint};
             })
-            
+
             
         const accessToken = createAccessToken(user.id);
         const refreshToken = await generateRefreshToken(user.id);

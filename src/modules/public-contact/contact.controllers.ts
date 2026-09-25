@@ -33,32 +33,9 @@ const callSchema = z.object({
  * @route GET /api/contact/:token/call
  * @access public
  */
-const initiateCallController = asyncHandler (async(
-  req,
-  res,
-  next
-) => {
-  try {
-    const { token } = req.params;
 
-      if (!token || Array.isArray(token)) {
-          throw new BadRequestError("Invalid contact token");
-      }
-
-      const result = await initiateCall({
-          token,
-          visitorPhoneNumber: req.body.phoneNumber,
-      });
-
-    res.status(201).json({
-      data: result,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
 
 export {
     getContactController,
-    initiateCallController
+
 };

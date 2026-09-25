@@ -28,7 +28,7 @@ const testLoginController = asyncHandler (async (req, res, next) => {
 const requestSignupOtpController = asyncHandler (async (req, res, next) => {
     const {mobileNumber} = req.body
 
-    await signupService.requestSignupOtp(mobileNumber);
+    await signupService.requestSignupOtp(mobileNumber, req.ip!);
     res.status(200).json({message: "OTP sent successfully"})
 })
 
@@ -70,7 +70,7 @@ const verifySignupController = asyncHandler (async (req, res, next) =>{
 const requestLoginOtpController = asyncHandler (async (req, res, next) => {
     const {mobileNumber} = req.body
 
-    await loginService.requestLoginOtp(mobileNumber);
+    await loginService.requestLoginOtp(mobileNumber, req.ip!);
     res.status(200).json({message: "OTP sent successfully"})
 })
 

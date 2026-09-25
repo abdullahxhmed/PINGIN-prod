@@ -4,9 +4,12 @@ import { prisma } from "../../../lib/prisma.js"
 import { createAccessToken, generateRefreshToken } from "../auth.services.js"
 import { otpService } from "../otp.service.js"
 import argon2 from "argon2"
+import { checkOtpRateLimit } from "../../../middleware/otp-rateLimiter.js"
 
 
-const requestLoginOtp = async (mobileNo:string) => {
+const requestLoginOtp = async (mobileNo:string, ip:string) => {
+    
+    await checkOtpRateLimit(mobileNo,ip);
     const user = await prisma.user.findUnique({
         where: {
             mobileNumber: mobileNo
