@@ -2,7 +2,7 @@ import asyncHandler from "express-async-handler";
 import { z } from "zod";
 import { BadRequestError } from "../../errors/AppError.js";
 import { initiateCall } from "../communication/communication.service.js";
-import { getContact } from "./contact.services.js";
+import { getContact, verifyRegistrationNum } from "./contact.services.js";
 import { edesyService } from "../../integrations/edesy.service.js";
 
 /**
@@ -23,7 +23,19 @@ const getContactController = asyncHandler (async (req,res,next) => {
     res.status(200).json(resource);
 })
 
+const verifyRegNumController = asyncHandler (async (req, res, next) =>{
+    const {registrationNum} = req.body; 
+    const {token} = req.params;
+    if (typeof token !== "string" || typeof registrationNum !== "string") {
+        throw new BadRequestError("Invalid contact token or registrationNum");
+    }
+    await verifyRegistrationNum(token, registrationNum);
+    res.status(200).json({
+        success: true,
+        message: "verified"
+    });
 
+})
 const callSchema = z.object({
   phoneNumber: z.string().min(10).max(13),
 });
@@ -37,5 +49,5 @@ const callSchema = z.object({
 
 export {
     getContactController,
-
+    verifyRegNumController
 };

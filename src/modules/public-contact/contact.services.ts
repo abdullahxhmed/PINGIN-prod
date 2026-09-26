@@ -1,4 +1,4 @@
-import { AppError, InternalError, NotFoundError } from "../../errors/AppError.js";
+import { AppError, ForbiddenError, InternalError, NotFoundError } from "../../errors/AppError.js";
 import {prisma} from "../../lib/prisma.js"
 import {CommunicationSessionType} from "@prisma/client";
 import crypto from "crypto"
@@ -17,17 +17,30 @@ const getContact = async (contactToken: string) => {
             id: true,
             resource:{
                 select:{
-                    name:true
-                }
-            }
-        }
+                    name:true,
+                    vehicleDetail:{
+                        select:{
+                            registrationNum:true,
+                            vehicleColour:true
+                        }
+                    }
+                },
+            },
+
+        },
     });
     if(!contactDetails)
         throw new NotFoundError("Resource not found");
 
+    const hasRegistrationNumber = !!contactDetails.resource.vehicleDetail?.registrationNum;
+
     return {
         id:contactDetails.id,
-        name: contactDetails.resource.name
+        name: contactDetails.resource.name,
+        hasRegistrationNumber,
+        vehicleDetails:{
+            colour: contactDetails.resource.vehicleDetail?.vehicleColour
+        }
     };
 }
 
@@ -123,11 +136,42 @@ function generateReference(){
     return `PK-${crypto.randomBytes(8).toString("hex")}`
 }
 
+const verifyRegistrationNum = async (token:string, submittedRegNo: string) => {
+    const contactDetails = await prisma.contactLink.findUnique({
+        where: {
+            token,
+            active: true,
+            resource:{
+                active:true
+            }
+        },
+        select: {
+            resource:{
+                select:{
+                    vehicleDetail:{
+                        select:{
+                            registrationNum: true
+                        },
+                    },
+                },
+            },
+        },
+    });
+    const existingRegNo = contactDetails?.resource.vehicleDetail?.registrationNum;
+
+    if(!existingRegNo)
+        throw new NotFoundError("registrationNum not found");
+    else if(existingRegNo !== submittedRegNo){
+        throw new ForbiddenError("Registration number does not match");
+    }
+    return true;
+}
 
 export {
     getContact,
     buildContactUrl,
     generateReference,
     createCommunicationSession,
-    getCommunicationContact
+    getCommunicationContact,
+    verifyRegistrationNum
 }
