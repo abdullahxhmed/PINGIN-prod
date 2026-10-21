@@ -5,6 +5,7 @@ import { createAccessToken, generateRefreshToken } from "../auth.services.js"
 import { otpService } from "../otp.service.js"
 import { checkOtpRateLimit } from "../../../middleware/otp-rateLimiter.js";
 import argon2 from "argon2"
+import { encryptPhoneNumber, generatePhoneLookup } from "../../../utils/phone-encryption.js";
 
 const requestSignupOtp = async (mobileNo:string, ip:string) => {
     const user = await prisma.user.findUnique({
@@ -45,11 +46,13 @@ const verifySignup = async (mobileNo: string,password:string, otp: string, userN
                 }
             });
 
-            const contactEndpoint = await prisma.contactEndpoint.create({
+            const contactEndpoint = await tx.contactEndpoint.create({
                 data: {
                     userId: user.id,
                     type: "PHONE",
-                    phoneNumber: mobileNo
+                    phoneNumber: mobileNo,
+                    phoneEncrypted: encryptPhoneNumber(mobileNo),
+                    phoneLookup: generatePhoneLookup(mobileNo),
                 }
             });
 
@@ -63,7 +66,8 @@ const verifySignup = async (mobileNo: string,password:string, otp: string, userN
             user: {
                 id: user.id,
                 name: user.name,
-                mobileNo: user.mobileNumber
+                mobileNumber: user.mobileNumber,
+                role: user.role,
             },
             accessToken: accessToken,
             refreshToken: refreshToken

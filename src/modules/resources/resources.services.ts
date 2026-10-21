@@ -1,13 +1,42 @@
-import { ResourceType } from "@prisma/client";
+import { ResourceType, QrTagStatus } from "@prisma/client";
 import { randomBytes } from "crypto";
 import { InternalError, NotFoundError } from "../../errors/AppError.js";
 import { prisma } from "../../lib/prisma.js";
 import { buildContactUrl } from "../public-contact/contact.services.js";
+import { decryptPhoneNumber } from "../../utils/phone-encryption.js";
 
 type vehicleDetailsInput = {
     registrationNum?:string;
     vehicleColour?:string;
 }
+
+
+
+const getCallerLastTwoDigits = (encryptedOrRawPhone?: string | null): string => {
+    if (!encryptedOrRawPhone) return "";
+    let raw = "";
+    try {
+        if (encryptedOrRawPhone.includes(":")) {
+            raw = decryptPhoneNumber(encryptedOrRawPhone);
+        } else {
+            raw = encryptedOrRawPhone;
+        }
+    } catch {
+        return "";
+    }
+
+    const digitsOnly = raw.replace(/\D/g, "");
+    if (digitsOnly.length < 2) return "";
+    return digitsOnly.slice(-2);
+};
+
+const formatDuration = (sec: number): string => {
+    if (!sec || sec <= 0) return "0s";
+    const mins = Math.floor(sec / 60);
+    const remainingSec = sec % 60;
+    if (mins === 0) return `${remainingSec}s`;
+    return `${mins}m ${remainingSec}s`;
+};
 
 const createResource = async (userId:string,name: string, type: ResourceType, vehicleDetails?:vehicleDetailsInput) => {
 
@@ -60,21 +89,68 @@ const getResources = async (userId:string) => {
         },
         include: {
             vehicleDetail: true,
-            contactLink: true
+            contactLink: true,
+            qrTag: {
+                where: {
+                    status: "ASSIGNED",
+                },
+            },
+            communicationSessions: {
+                orderBy: { createdAt: "desc" },
+                take: 5,
+                include: {
+                    calls: {
+                        orderBy: { createdAt: "desc" },
+                        take: 1,
+                    },
+                },
+            },
         }
     });
     if(!resources)
         throw new NotFoundError("Resources not found!");
 
-    return resources.map((resource) => ({
-        id: resource.id,
-        name: resource.name,
-        contactUrl: buildContactUrl(resource.contactLink!.token),
-        vehicleDetails:{
-            registrationNum: resource.vehicleDetail?.registrationNum,
-            vehicleColour: resource.vehicleDetail?.vehicleColour
-        }
-    }))
+    return resources.map((resource) => {
+        const activeTag = resource.qrTag?.[0] ?? null;
+        const recentCalls = (resource.communicationSessions || []).map((s) => {
+            const latestCall = s.calls?.[0];
+            const durationSec = latestCall?.durationSec ?? 0;
+            const lastTwo = getCallerLastTwoDigits(s.contactorPhoneNumber);
+            return {
+                id: s.id,
+                sessionId: s.id,
+                caller: lastTwo ? `Visitor (••${lastTwo})` : "Anonymous Visitor",
+                callerLastTwo: lastTwo || null,
+                status: latestCall?.status ?? s.status,
+                durationSec,
+                duration: formatDuration(durationSec),
+                createdAt: s.createdAt,
+                type: s.type,
+            };
+        });
+
+        return {
+            id: resource.id,
+            name: resource.name,
+            type: resource.type,
+            contactUrl: resource.contactLink ? buildContactUrl(resource.contactLink.token) : null,
+            tagNumber: activeTag?.tagNumber ?? null,
+            qrTag: activeTag ? {
+                id: activeTag.id,
+                tagNumber: activeTag.tagNumber,
+                status: activeTag.status,
+                origin: activeTag.origin,
+                assignedAt: activeTag.assignedAt,
+            } : null,
+            vehicleDetails:{
+                registrationNum: resource.vehicleDetail?.registrationNum ?? null,
+                vehicleColour: resource.vehicleDetail?.vehicleColour ?? null,
+            },
+            recentCalls,
+            calls: recentCalls,
+            communications: recentCalls,
+        };
+    });
 }
 
 
@@ -87,19 +163,65 @@ const getResourceById = async (resourceId: string, userId: string) => {
         },
         include: {
             contactLink: true,
-            vehicleDetail:true
+            vehicleDetail: true,
+            qrTag: {
+                where: {
+                    status: "ASSIGNED",
+                },
+            },
+            communicationSessions: {
+                orderBy: { createdAt: "desc" },
+                take: 10,
+                include: {
+                    calls: {
+                        orderBy: { createdAt: "desc" },
+                        take: 1,
+                    },
+                },
+            },
         }
     })
     if(!resource)
         throw new NotFoundError("Resource not found")
+
+    const activeTag = resource.qrTag?.[0] ?? null;
+    const recentCalls = (resource.communicationSessions || []).map((s) => {
+        const latestCall = s.calls?.[0];
+        const durationSec = latestCall?.durationSec ?? 0;
+        const lastTwo = getCallerLastTwoDigits(s.contactorPhoneNumber);
+        return {
+            id: s.id,
+            sessionId: s.id,
+            caller: lastTwo ? `Visitor (••${lastTwo})` : "Anonymous Visitor",
+            callerLastTwo: lastTwo || null,
+            status: latestCall?.status ?? s.status,
+            durationSec,
+            duration: formatDuration(durationSec),
+            createdAt: s.createdAt,
+            type: s.type,
+        };
+    });
+
     return {
         id: resource.id,
         name: resource.name,
-        contactUrl: buildContactUrl(resource.contactLink!.token),
+        type: resource.type,
+        contactUrl: resource.contactLink ? buildContactUrl(resource.contactLink.token) : null,
+        tagNumber: activeTag?.tagNumber ?? null,
+        qrTag: activeTag ? {
+            id: activeTag.id,
+            tagNumber: activeTag.tagNumber,
+            status: activeTag.status,
+            origin: activeTag.origin,
+            assignedAt: activeTag.assignedAt,
+        } : null,
         vehicleDetails:{
-            registrationNum: resource.vehicleDetail?.registrationNum,
-            vehicleColour: resource.vehicleDetail?.vehicleColour
-        }
+            registrationNum: resource.vehicleDetail?.registrationNum ?? null,
+            vehicleColour: resource.vehicleDetail?.vehicleColour ?? null,
+        },
+        recentCalls,
+        calls: recentCalls,
+        communications: recentCalls,
     }
 }
 
@@ -122,32 +244,151 @@ const modifyResourceById = async (resourceId : string, userId: string, updateVal
 
 const deleteResourceById = async (
     resourceId: string,
-     userId: string,
-    ) => {
-        try{
-            await prisma.resource.update({
-                where: {
-                    id: resourceId,
-                    userId,
-                    active: true
-                },
-                data: {
-                    active: false  //soft delete no active deletes
-                }
-            })
-            console.log("Deleted Resource");
-        }
-        catch(err){
-            throw new Error;
-        }
+    userId: string,
+) => {
+    const resource = await prisma.resource.findFirst({
+        where: {
+            id: resourceId,
+            userId,
+            active: true,
+        },
+    });
 
+    if (!resource) {
+        throw new NotFoundError("Resource not found or already deleted");
     }
 
+    const now = new Date();
+
+    // Perform atomic soft deletion + QR unpairing + ContactLink deactivation
+    await prisma.$transaction(async (tx) => {
+        // 1. Soft-delete the resource
+        await tx.resource.update({
+            where: { id: resourceId },
+            data: { active: false },
+        });
+
+        // 2. Deactivate any associated ContactLink
+        await tx.contactLink.updateMany({
+            where: { resourceId },
+            data: { active: false },
+        });
+
+        // 3. Cleanly unpair and release any associated QR tag back to UNASSIGNED
+        const linkedTags = await tx.qrTag.findMany({
+            where: { resourceId },
+        });
+
+        for (const tag of linkedTags) {
+            // Close active assignment audit log
+            await tx.qrAssignment.updateMany({
+                where: {
+                    qrTagId: tag.id,
+                    resourceId,
+                    unassignedAt: null,
+                },
+                data: {
+                    unassignedAt: now,
+                },
+            });
+
+            // Unlock and release tag back to UNASSIGNED so it can be re-paired
+            await tx.qrTag.update({
+                where: { id: tag.id },
+                data: {
+                    status: QrTagStatus.UNASSIGNED,
+                    resourceId: null,
+                    assignmentMethod: null,
+                    assignedAt: null,
+                },
+            });
+        }
+    });
+
+    return {
+        success: true,
+        message: "Resource deleted and associated QR tags successfully unlinked.",
+    };
+};
 
 
 
 
+
+
+const getResourceCalls = async (resourceId: string, userId: string, page = 1, limit = 20) => {
+    const resource = await prisma.resource.findFirst({
+        where: {
+            id: resourceId,
+            userId,
+            active: true,
+        },
+        select: {
+            id: true,
+            name: true,
+        },
+    });
+
+    if (!resource) {
+        throw new NotFoundError("Resource not found");
+    }
+
+    const skip = (page - 1) * limit;
+
+    const [total, sessions] = await prisma.$transaction([
+        prisma.communicationSession.count({
+            where: { resourceId },
+        }),
+        prisma.communicationSession.findMany({
+            where: { resourceId },
+            skip,
+            take: limit,
+            orderBy: { createdAt: "desc" },
+            include: {
+                calls: {
+                    orderBy: { createdAt: "desc" },
+                    take: 1,
+                },
+            },
+        }),
+    ]);
+
+    const calls = sessions.map((s) => {
+        const latestCall = s.calls?.[0];
+        const durationSec = latestCall?.durationSec ?? 0;
+        const lastTwo = getCallerLastTwoDigits(s.contactorPhoneNumber);
+        return {
+            id: s.id,
+            sessionId: s.id,
+            caller: lastTwo ? `Visitor (••${lastTwo})` : "Anonymous Visitor",
+            callerLastTwo: lastTwo || null,
+            status: latestCall?.status ?? s.status,
+            durationSec,
+            duration: formatDuration(durationSec),
+            createdAt: s.createdAt,
+            incomingAt: latestCall?.incomingAt ?? s.createdAt,
+            connectedAt: latestCall?.connectedAt ?? null,
+            endedAt: latestCall?.endedAt ?? s.endedAt,
+            type: s.type,
+        };
+    });
+
+    return {
+        resourceId: resource.id,
+        resourceName: resource.name,
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+        calls,
+    };
+};
 
 export {
-    createResource, deleteResourceById, getResourceById, getResources, modifyResourceById
+    createResource,
+    deleteResourceById,
+    getResourceById,
+    getResources,
+    modifyResourceById,
+    getResourceCalls,
 };

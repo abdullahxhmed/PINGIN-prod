@@ -3,6 +3,7 @@ import {prisma} from "../../lib/prisma.js"
 import {CommunicationSessionType} from "@prisma/client";
 import crypto from "crypto"
 import { edesyService } from "../../integrations/edesy.service.js";
+import { encryptPhoneNumber } from "../../utils/phone-encryption.js";
 
 const getContact = async (contactToken: string) => {
     const contactDetails = await prisma.contactLink.findUnique({
@@ -63,7 +64,7 @@ const createCommunicationSession = async (
             resourceId: contact.resourceId,
             contactLinkId: contact.contactLinkId,
             contactEndpointId: contact.contactEndpointId,
-            contactorPhoneNumber: visitorPhoneNumber,
+            contactorPhoneNumber: encryptPhoneNumber(visitorPhoneNumber),
             type,
             status: "PENDING",
         },

@@ -1,6 +1,6 @@
 import express from "express";
 import asyncHandler from "express-async-handler";
-import { createResource, deleteResourceById, getResourceById, getResources, modifyResourceById } from "./resources.services.js";
+import { createResource, deleteResourceById, getResourceById, getResources, modifyResourceById, getResourceCalls } from "./resources.services.js";
 import { BadRequestError } from "../../errors/AppError.js";
 
 /**
@@ -107,12 +107,24 @@ const deleteResourceByIdController = asyncHandler (async (req, res, next) => {
     res.status(204).send()
 })
 
+/**
+ * @description Get paginated call history for a specific resource
+ * @route GET /api/resources/:id/calls
+ * @access private
+ */
+const getResourceCallsController = asyncHandler(async (req, res, next) => {
+    const { id } = req.params;
 
+    if (typeof id !== "string") {
+        throw new BadRequestError("Resource ID is required");
+    }
 
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit as string) || 20));
 
-
-
-
+    const result = await getResourceCalls(id, req.user.id, page, limit);
+    res.status(200).json(result);
+});
 
 export {
     createResourceController,
@@ -120,5 +132,5 @@ export {
     getResourceByIdController,
     modifyResourceByIdController,
     deleteResourceByIdController,
-
+    getResourceCallsController,
 }

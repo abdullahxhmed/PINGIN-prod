@@ -104,35 +104,50 @@ const handleEdesyWebhook = async (
                 });
                 break;
 
-            case "call.ended":
-                await prisma.communicationCall.update({
-                    where: {
-                        id: call.id,
-                    },
-                    data: {
-                        status: "COMPLETED",
-                        endedAt: new Date(),
-                        durationSec:
-                            payload.duration_sec ?? null,
-                        providerStatus:
-                            payload.status ?? null,
-                    },
-                });
+            case "call.ended": {
+                const now = new Date();
+                await prisma.$transaction([
+                    prisma.communicationCall.update({
+                        where: { id: call.id },
+                        data: {
+                            status: "COMPLETED",
+                            endedAt: now,
+                            durationSec: payload.duration_sec ?? null,
+                            providerStatus: payload.status ?? null,
+                        },
+                    }),
+                    prisma.communicationSession.update({
+                        where: { id: call.sessionId },
+                        data: {
+                            status: "EXPIRED",
+                            endedAt: now,
+                        },
+                    }),
+                ]);
                 break;
+            }
 
-            case "call.missed":
-                await prisma.communicationCall.update({
-                    where: {
-                        id: call.id,
-                    },
-                    data: {
-                        status: "MISSED",
-                        endedAt: new Date(),
-                        providerStatus:
-                            payload.status ?? null,
-                    },
-                });
+            case "call.missed": {
+                const now = new Date();
+                await prisma.$transaction([
+                    prisma.communicationCall.update({
+                        where: { id: call.id },
+                        data: {
+                            status: "MISSED",
+                            endedAt: now,
+                            providerStatus: payload.status ?? null,
+                        },
+                    }),
+                    prisma.communicationSession.update({
+                        where: { id: call.sessionId },
+                        data: {
+                            status: "EXPIRED",
+                            endedAt: now,
+                        },
+                    }),
+                ]);
                 break;
+            }
         }
 
         await prisma.edesyWebhookEvent.update({

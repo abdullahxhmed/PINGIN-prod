@@ -67,7 +67,8 @@ const refreshAccessToken = async (refreshToken:string) => {
 }
 
 const getCurrentUser = async (userId:string) => {
-    return prisma.user.findUnique({
+    const start = performance.now();
+    const user = prisma.user.findUnique({
         where:{
             id: userId,
             active: true
@@ -76,6 +77,7 @@ const getCurrentUser = async (userId:string) => {
             id: true,
             name: true,
             mobileNumber: true,
+            role: true,
             contactEndpoint: {
                 select:{
                     type:true,
@@ -84,6 +86,8 @@ const getCurrentUser = async (userId:string) => {
             },
         },
     });
+    console.log("Prisma:", performance.now() - start);
+    return user;
 }
 
 

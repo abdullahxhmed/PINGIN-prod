@@ -6,7 +6,12 @@ datasource db {
   provider = "postgresql"
 }
 
-// ENUMS 
+// ENUMS
+
+enum UserRole {
+  USER
+  ADMIN
+}
 
 enum ContactEndpointType {
   PHONE
@@ -37,11 +42,27 @@ enum CommunicationSessionType {
   MESSAGE
 }
 
-enum ResourceType{
+enum ResourceType {
   VEHICLE
   PROPERTY
   EQUIPMENT
   OTHER
+}
+
+enum QrTagOrigin {
+  PREPRINTED_INVENTORY
+  GENERATED_FOR_RESOURCE
+}
+
+enum QrTagStatus {
+  UNASSIGNED
+  ASSIGNED
+  REVOKED
+}
+
+enum QrAssignmentMethod {
+  USER_PAIRED
+  SYSTEM_BOUND
 }
 
 // DATABASE TABLES
@@ -50,6 +71,7 @@ model User {
   id           String   @id @default(uuid()) @db.Uuid
   name         String
   mobileNumber String   @unique
+  role         UserRole @default(USER)
   passwordHash String?
   active       Boolean  @default(true)
   createdAt    DateTime @default(now())
@@ -61,12 +83,14 @@ model User {
 }
 
 model ContactEndpoint {
-  id          String              @id @default(uuid()) @db.Uuid
-  userId      String              @unique @db.Uuid
-  type        ContactEndpointType
-  phoneNumber String
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
+  id             String              @id @default(uuid()) @db.Uuid
+  userId         String              @unique @db.Uuid
+  type           ContactEndpointType
+  phoneNumber    String
+  phoneEncrypted String
+  phoneLookup    String              @unique
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -74,30 +98,32 @@ model ContactEndpoint {
 }
 
 model Resource {
-  id        String   @id @default(uuid()) @db.Uuid
-  userId    String   @db.Uuid
+  id        String       @id @default(uuid()) @db.Uuid
+  userId    String       @db.Uuid
   name      String
-  active    Boolean  @default(true)
-  type ResourceType
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  active    Boolean      @default(true)
+  type      ResourceType
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Restrict)
 
   contactLink           ContactLink?
   communicationSessions CommunicationSession[]
-  vehicleDetail VehicleDetail?
+  vehicleDetail         VehicleDetail?
+  qrAssignment          QrAssignment[]
+  qrTag                 QrTag[]
 }
 
-
 model VehicleDetail {
-  id String @id @default(uuid()) @db.Uuid
-  resourceId String @db.Uuid @unique
+  id              String  @id @default(uuid()) @db.Uuid
+  resourceId      String  @unique @db.Uuid
   registrationNum String?
-  vehicleColour String?
+  vehicleColour   String?
 
   resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
 }
+
 model ContactLink {
   id         String   @id @default(uuid()) @db.Uuid
   resourceId String   @unique @db.Uuid
@@ -112,12 +138,12 @@ model ContactLink {
 }
 
 model CommunicationSession {
-  id                   String @id @default(uuid()) @db.Uuid
-  reference            String @unique
-  resourceId           String @db.Uuid
-  type CommunicationSessionType 
-  contactLinkId        String @db.Uuid
-  contactEndpointId    String @db.Uuid
+  id                   String                   @id @default(uuid()) @db.Uuid
+  reference            String                   @unique
+  resourceId           String                   @db.Uuid
+  type                 CommunicationSessionType
+  contactLinkId        String                   @db.Uuid
+  contactEndpointId    String                   @db.Uuid
   contactorPhoneNumber String
 
   status    CommunicationSessionStatus @default(PENDING)
@@ -151,9 +177,9 @@ model CommunicationCall {
   providerStatus String?
 
   durationSec Int?
-  incomingAt   DateTime?
-  connectedAt  DateTime?
-  endedAt      DateTime?
+  incomingAt  DateTime?
+  connectedAt DateTime?
+  endedAt     DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -200,4 +226,39 @@ model RefreshToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+model QrTag {
+  id               String              @id @default(uuid()) @db.Uuid
+  tagNumber        String              @unique
+  tokenHash        String              @unique
+  origin           QrTagOrigin
+  status           QrTagStatus         @default(UNASSIGNED)
+
+  resourceId       String?             @unique @db.Uuid
+  resource         Resource?           @relation(fields: [resourceId], references: [id])
+
+  assignmentMethod QrAssignmentMethod?
+  assignedAt       DateTime?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  assignments QrAssignment[]
+}
+
+model QrAssignment {
+  id         String @id @default(cuid())
+  qrTagId    String @db.Uuid
+  resourceId String @db.Uuid
+
+  method       QrAssignmentMethod
+  assignedAt   DateTime           @default(now())
+  unassignedAt DateTime?
+
+  qrTag QrTag @relation(fields: [qrTagId], references: [id])
+
+  resource Resource @relation(fields: [resourceId], references: [id])
+
+  @@index([qrTagId, assignedAt])
+  @@index([resourceId, assignedAt])
 }

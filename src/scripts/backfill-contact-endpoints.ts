@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { encryptPhoneNumber, generatePhoneLookup } from "../utils/phone-encryption.js";
 
 async function main() {
   const users = await prisma.user.findMany({
@@ -19,6 +20,8 @@ async function main() {
         userId: user.id,
         type: "PHONE",
         phoneNumber: user.mobileNumber,
+        phoneEncrypted: encryptPhoneNumber(user.mobileNumber),
+        phoneLookup: generatePhoneLookup(user.mobileNumber),
       },
     });
 

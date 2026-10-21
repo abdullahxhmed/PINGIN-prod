@@ -1,0 +1,15 @@
+import { Pool } from "pg";
+
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL!,
+    connectionTimeoutMillis: 10000,
+    max: 10,
+});
+
+const start = performance.now();
+
+const result = await pool.query("SELECT 1");
+
+console.log("RAW PG:", performance.now() - start);
+
+await pool.end();

@@ -33,6 +33,12 @@ const verifyLoginOtp = async (mobileNo: string, otp: string) => {
             mobileNumber: mobileNo,
             active: true
         },
+        select: {
+            id: true,
+            name: true,
+            mobileNumber: true,
+            role: true,
+        },
     });
     if(!user){
         throw new NotFoundError("Signup before logging in");
@@ -51,7 +57,12 @@ const verifyLoginOtp = async (mobileNo: string, otp: string) => {
     const accessToken = createAccessToken(user.id);
     const refreshToken = await generateRefreshToken(user.id);
     return {
-        user: user,
+        user: {
+            id: user.id,
+            name: user.name,
+            mobileNumber: user.mobileNumber,
+            role: user.role,
+        },
         accessToken: accessToken,
         refreshToken: refreshToken
     }
@@ -66,6 +77,13 @@ const verifyLoginPassword = async (
     where: {
       mobileNumber: mobileNo,
       active: true,
+    },
+    select: {
+      id: true,
+      name: true,
+      mobileNumber: true,
+      role: true,
+      passwordHash: true,
     },
   });
 
@@ -90,6 +108,7 @@ const verifyLoginPassword = async (
       id: user.id,
       name: user.name,
       mobileNumber: user.mobileNumber,
+      role: user.role,
     },
     accessToken,
     refreshToken,

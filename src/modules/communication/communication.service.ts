@@ -4,6 +4,7 @@ import { createCommunicationSession, getCommunicationContact } from "../public-c
 import { edesyService } from "../../integrations/edesy.service.js";
 import { InternalError, NotFoundError } from "../../errors/AppError.js"
 import { checkCallRateLimit } from "../../middleware/call-rateLimiter.js";
+import { encryptPhoneNumber } from "../../utils/phone-encryption.js";
 
 
 interface InitiateCallInput {
@@ -41,8 +42,8 @@ const initiateCall = async ({
     data: {
       sessionId: session.id,
       callSid: edesyCall.callSid,
-      caller: visitorPhoneNumber,
-      callee: contact.contactEndpointPhoneNumber,
+      caller: encryptPhoneNumber(visitorPhoneNumber),
+      callee: encryptPhoneNumber(contact.contactEndpointPhoneNumber),
       direction: "click_to_call",
       status: "INITIATED",
       providerStatus: edesyCall.providerStatus,
