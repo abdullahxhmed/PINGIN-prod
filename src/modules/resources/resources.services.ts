@@ -154,11 +154,20 @@ const getResources = async (userId:string) => {
 }
 
 
+const checkIsAdmin = async (userId: string): Promise<boolean> => {
+    const caller = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { role: true },
+    });
+    return caller?.role === "ADMIN";
+};
+
 const getResourceById = async (resourceId: string, userId: string) => {
+    const isAdmin = await checkIsAdmin(userId);
     const resource = await prisma.resource.findFirst({
         where:{
             id: resourceId,
-            userId,
+            ...(isAdmin ? {} : { userId }),
             active: true,
         },
         include: {
@@ -317,10 +326,11 @@ const deleteResourceById = async (
 
 
 const getResourceCalls = async (resourceId: string, userId: string, page = 1, limit = 20) => {
+    const isAdmin = await checkIsAdmin(userId);
     const resource = await prisma.resource.findFirst({
         where: {
             id: resourceId,
-            userId,
+            ...(isAdmin ? {} : { userId }),
             active: true,
         },
         select: {
@@ -385,10 +395,11 @@ const getResourceCalls = async (resourceId: string, userId: string, page = 1, li
 };
 
 const getResourceAnalytics = async (resourceId: string, userId: string) => {
+  const isAdmin = await checkIsAdmin(userId);
   const resource = await prisma.resource.findFirst({
     where: {
       id: resourceId,
-      userId,
+      ...(isAdmin ? {} : { userId }),
       active: true,
     },
     select: {
