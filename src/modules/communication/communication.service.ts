@@ -10,13 +10,15 @@ import { encryptPhoneNumber } from "../../utils/phone-encryption.js";
 interface InitiateCallInput {
   token: string;
   visitorPhoneNumber: string;
-  ip:string
+  ip: string;
+  visitId?: string;
 }
 
 const initiateCall = async ({
   token,
   visitorPhoneNumber,
-  ip
+  ip,
+  visitId,
 }: InitiateCallInput) => {
     const contact = await getCommunicationContact(token);
 
@@ -29,7 +31,9 @@ const initiateCall = async ({
         token,
         CommunicationSessionType.CALL,
         visitorPhoneNumber,
+        visitId,
     );
+
 
   // 3. Ask Edesy to initiate the call
   const edesyCall = await edesyService.initiateCall(

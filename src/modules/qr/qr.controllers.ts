@@ -180,8 +180,14 @@ export const redirectTagScanController = asyncHandler(async (req, res) => {
   const publicAppUrl = process.env.PUBLIC_APP_URL || "https://pingin.co.in";
   try {
     const result = await resolveTagToken(token);
-    res.redirect(302, `${publicAppUrl}${result.redirectUrl}`);
+    const redirectUrl =
+      result.action === "CONTACT"
+        ? `${result.redirectUrl}?src=qr_scan`
+        : result.redirectUrl;
+
+    res.redirect(302, `${publicAppUrl}${redirectUrl}`);
   } catch (err: any) {
     res.redirect(302, `${publicAppUrl}/tag/invalid`);
   }
 });
+

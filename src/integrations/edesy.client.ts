@@ -8,13 +8,15 @@ interface EdesyInitiateCallResponse {
   };
 }
 
-export class EdesyApiError extends Error {
+import { AppError } from "../errors/AppError.js";
+
+export class EdesyApiError extends AppError {
   constructor(
     message: string,
     public readonly statusCode: number,
     public readonly code?: string
   ) {
-    super(message);
+    super(message, statusCode >= 400 && statusCode < 600 ? statusCode : 502);
     this.name = "EdesyApiError";
   }
 }
@@ -50,6 +52,7 @@ export class EdesyClient {
     const body = await response.json();
 
     if (!response.ok) {
+      console.error("Edesy API error response:", { status: response.status, body });
       throw new EdesyApiError(
         body?.error?.message ?? "Edesy API request failed",
         response.status,

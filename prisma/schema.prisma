@@ -65,6 +65,19 @@ enum QrAssignmentMethod {
   SYSTEM_BOUND
 }
 
+enum VisitSource {
+  QR_SCAN
+  SHARE
+  DIRECT
+}
+
+enum DeviceType {
+  MOBILE
+  DESKTOP
+  TABLET
+  UNKNOWN
+}
+
 // DATABASE TABLES
 
 model User {
@@ -74,6 +87,7 @@ model User {
   role         UserRole @default(USER)
   passwordHash String?
   active       Boolean  @default(true)
+  lastSeenAt   DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -113,6 +127,7 @@ model Resource {
   vehicleDetail         VehicleDetail?
   qrAssignment          QrAssignment[]
   qrTag                 QrTag[]
+  tagVisits             TagVisit[]
 }
 
 model VehicleDetail {
@@ -150,9 +165,10 @@ model CommunicationSession {
   expiresAt DateTime?
   endedAt   DateTime?
 
+  visitId   String?                  @db.VarChar(64)
   provider  String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime                 @default(now())
+  updatedAt DateTime                 @updatedAt
 
   resource        Resource        @relation(fields: [resourceId], references: [id], onDelete: Restrict)
   contactLink     ContactLink     @relation(fields: [contactLinkId], references: [id], onDelete: Restrict)
@@ -163,6 +179,7 @@ model CommunicationSession {
   @@index([resourceId])
   @@index([contactLinkId])
   @@index([contactEndpointId])
+  @@index([visitId])
 }
 
 model CommunicationCall {
@@ -244,6 +261,7 @@ model QrTag {
   updatedAt        DateTime            @updatedAt
 
   assignments QrAssignment[]
+  tagVisits   TagVisit[]
 }
 
 model QrAssignment {
@@ -262,3 +280,25 @@ model QrAssignment {
   @@index([qrTagId, assignedAt])
   @@index([resourceId, assignedAt])
 }
+
+model TagVisit {
+  id         String      @id @default(uuid()) @db.Uuid
+  visitId    String      @unique @db.VarChar(64)
+  resourceId String      @db.Uuid
+  qrTagId    String?     @db.Uuid
+
+  source     VisitSource @default(DIRECT)
+  deviceType DeviceType  @default(UNKNOWN)
+  os         String?     @db.VarChar(20)
+  browser    String?     @db.VarChar(20)
+  ipHash     String?     @db.VarChar(16)
+
+  createdAt  DateTime    @default(now())
+
+  resource   Resource    @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  qrTag      QrTag?      @relation(fields: [qrTagId], references: [id], onDelete: SetNull)
+
+  @@index([resourceId, createdAt])
+  @@index([createdAt])
+}
+

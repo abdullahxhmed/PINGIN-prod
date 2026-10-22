@@ -1,26 +1,26 @@
-import express from "express";
 import asyncHandler from "express-async-handler";
-import { nextTick } from "node:process";
-import { createUser, getUsers } from "./users.service.js";
-
-// const router = express.Router();
-
-
+import {
+  createUser,
+  getUsers,
+  updateUserName,
+  changeUserPassword,
+} from "./users.service.js";
+import {
+  updateUserNameSchema,
+  changePasswordSchema,
+} from "./users.schema.js";
+import { BadRequestError } from "../../errors/AppError.js";
 
 /**
  * @description Create new user
  * @route POST /api/users
  * @access public
  */
-const createUserController = asyncHandler(async (req, res,next) => {
-    console.log(req.body);
-        const user = await createUser(
-            req.body.name,
-            req.body.mobileNumber
-        )
-        res.status(201).json(user);
+const createUserController = asyncHandler(async (req, res, next) => {
+  console.log(req.body);
+  const user = await createUser(req.body.name, req.body.mobileNumber);
+  res.status(201).json(user);
 });
-
 
 /**
  * @description Get all users
@@ -28,12 +28,57 @@ const createUserController = asyncHandler(async (req, res,next) => {
  * @access public
  */
 const getUsersController = asyncHandler(async (req, res, next) => {
-        const users = await getUsers();
-        res.status(200).json(users);
-})
+  const users = await getUsers();
+  res.status(200).json(users);
+});
 
-// export default router;
+/**
+ * @description Update user profile (name only)
+ * @route PATCH /api/users/me, PATCH /api/users/profile
+ * @access private
+ */
+const updateUserNameController = asyncHandler(async (req, res, next) => {
+  const result = updateUserNameSchema.safeParse(req.body);
+  if (!result.success) {
+    const message = result.error.issues[0]?.message || "Invalid name data";
+    throw new BadRequestError(message);
+  }
+
+  const updatedUser = await updateUserName(req.user.id, result.data.name);
+
+  res.status(200).json({
+    message: "Name updated successfully",
+    user: updatedUser,
+  });
+});
+
+/**
+ * @description Change user password
+ * @route POST /api/users/change-password, PUT /api/users/change-password
+ * @access private
+ */
+const changePasswordController = asyncHandler(async (req, res, next) => {
+  const result = changePasswordSchema.safeParse(req.body);
+  if (!result.success) {
+    const message = result.error.issues[0]?.message || "Invalid password data";
+    throw new BadRequestError(message);
+  }
+
+  const currentPassword =
+    result.data.currentPassword || result.data.oldPassword;
+
+  const response = await changeUserPassword(
+    req.user.id,
+    currentPassword,
+    result.data.newPassword
+  );
+
+  res.status(200).json(response);
+});
+
 export {
-    createUserController,
-    getUsersController
-}
+  createUserController,
+  getUsersController,
+  updateUserNameController,
+  changePasswordController,
+};

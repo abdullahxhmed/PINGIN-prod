@@ -384,6 +384,111 @@ const getResourceCalls = async (resourceId: string, userId: string, page = 1, li
     };
 };
 
+const getResourceAnalytics = async (resourceId: string, userId: string) => {
+  const resource = await prisma.resource.findFirst({
+    where: {
+      id: resourceId,
+      userId,
+      active: true,
+    },
+    select: {
+      id: true,
+      name: true,
+    },
+  });
+
+  if (!resource) {
+    throw new NotFoundError("Resource not found");
+  }
+
+  const [
+    totalVisits,
+    qrScans,
+    shareVisits,
+    directVisits,
+    callsInitiated,
+    callsCompleted,
+    deviceBreakdown,
+    recentVisits,
+  ] = await prisma.$transaction([
+    prisma.tagVisit.count({ where: { resourceId } }),
+    prisma.tagVisit.count({ where: { resourceId, source: "QR_SCAN" } }),
+    prisma.tagVisit.count({ where: { resourceId, source: "SHARE" } }),
+    prisma.tagVisit.count({ where: { resourceId, source: "DIRECT" } }),
+    prisma.communicationSession.count({ where: { resourceId } }),
+    prisma.communicationCall.count({
+      where: {
+        session: { resourceId },
+        status: "COMPLETED",
+      },
+    }),
+    prisma.tagVisit.groupBy({
+      by: ["deviceType"],
+      where: { resourceId },
+      _count: { deviceType: true },
+      orderBy: { _count: { deviceType: "desc" } },
+    }),
+    prisma.tagVisit.findMany({
+      where: { resourceId },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: {
+        id: true,
+        source: true,
+        deviceType: true,
+        os: true,
+        browser: true,
+        createdAt: true,
+      },
+    }),
+  ]);
+
+  // Hourly distribution in IST (Asia/Kolkata)
+  const hourlyRaw: Array<{ hour: number; count: bigint }> = await prisma.$queryRaw`
+    SELECT 
+      CAST(EXTRACT(HOUR FROM "createdAt" AT TIME ZONE 'Asia/Kolkata') AS INTEGER) AS hour,
+      COUNT(*)::bigint AS count
+    FROM "TagVisit"
+    WHERE "resourceId" = ${resourceId}::uuid
+    GROUP BY hour
+    ORDER BY hour ASC;
+  `;
+
+  const hourlyDistribution = Array.from({ length: 24 }, (_, i) => {
+    const match = hourlyRaw.find((h) => Number(h.hour) === i);
+    return {
+      hour: i,
+      label: `${i.toString().padStart(2, "0")}:00`,
+      visits: match ? Number(match.count) : 0,
+    };
+  });
+
+  const conversionRate =
+    totalVisits > 0 ? Number(((callsInitiated / totalVisits) * 100).toFixed(1)) : 0;
+
+  return {
+    resourceId: resource.id,
+    resourceName: resource.name,
+    summary: {
+      totalVisits,
+      qrScans,
+      shareVisits,
+      directVisits,
+      callsInitiated,
+      callsCompleted,
+      conversionRate,
+    },
+    deviceBreakdown: deviceBreakdown.map((d) => ({
+      deviceType: d.deviceType,
+      count: typeof d._count === "object" && d._count !== null ? d._count.deviceType ?? 0 : 0,
+    })),
+
+    hourlyDistribution,
+    recentVisits,
+  };
+};
+
+
 export {
     createResource,
     deleteResourceById,
@@ -391,4 +496,6 @@ export {
     getResources,
     modifyResourceById,
     getResourceCalls,
+    getResourceAnalytics,
 };
+

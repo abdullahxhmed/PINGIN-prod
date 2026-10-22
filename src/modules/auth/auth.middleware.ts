@@ -1,6 +1,9 @@
 import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import { BadRequestError, UnauthorizedError } from "../../errors/AppError.js";
+import { prisma } from "../../lib/prisma.js";
+import redis from "../../lib/redis.js";
+
 
 const authenticateRequest = async (req: Request, res: Response, next: NextFunction) => {
     const authHeader = req.headers.authorization
@@ -33,8 +36,26 @@ const authenticateRequest = async (req: Request, res: Response, next: NextFuncti
         id: payload.sub
     }
 
+    // Throttled lastSeenAt update in background (at most once every 6 hours per user)
+    const userId = payload.sub;
+    setImmediate(async () => {
+      try {
+        const key = `user:lastSeen:${userId}`;
+        const isFirstInWindow = await redis.set(key, "1", "EX", 21600, "NX");
+        if (isFirstInWindow) {
+          await prisma.user.update({
+            where: { id: userId },
+            data: { lastSeenAt: new Date() },
+          });
+        }
+      } catch {
+        // Non-blocking
+      }
+    });
+
     next();
 }
+
 
 
 export {

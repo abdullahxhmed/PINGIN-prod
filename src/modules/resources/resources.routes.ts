@@ -6,6 +6,7 @@ import {
     modifyResourceByIdController,
     deleteResourceByIdController,
     getResourceCallsController,
+    getResourceAnalyticsController,
 } from "./resources.controllers.js";
 
 const router = express.Router();
@@ -18,6 +19,11 @@ router
 router
     .route('/:id/calls')
     .get(getResourceCallsController);
+
+router
+    .route('/:id/analytics')
+    .get(getResourceAnalyticsController);
+
 
 router
     .route('/:id')

@@ -19,8 +19,10 @@ const initiateCallController = asyncHandler (async(
       const result = await initiateCall({
           token,
           visitorPhoneNumber: req.body.phoneNumber,
-          ip
+          ip,
+          visitId: req.body.visitId,
       });
+
 
     res.status(201).json({
       data: result,

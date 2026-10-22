@@ -54,6 +54,7 @@ const createCommunicationSession = async (
     token: string,
     type: CommunicationSessionType,
     visitorPhoneNumber: string,
+    visitId?: string,
 ) => {
     try{
         const contact = await getCommunicationContact(token);
@@ -67,12 +68,15 @@ const createCommunicationSession = async (
             contactorPhoneNumber: encryptPhoneNumber(visitorPhoneNumber),
             type,
             status: "PENDING",
+            visitId: visitId || null,
         },
     })
     return session;
   
     }
+
     catch(err){
+        console.error("createCommunicationSession error:", err);
         if(err instanceof AppError){
             throw err;
         }

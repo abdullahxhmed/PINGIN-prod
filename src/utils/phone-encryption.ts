@@ -3,6 +3,10 @@ import crypto from "node:crypto";
 const getEncryptionKey = (): Buffer => {
   const keyBase64 = process.env.PHONE_ENCRYPTION_KEY;
   if (!keyBase64) {
+    if (process.env.JWT_SECRET) {
+      console.warn("PHONE_ENCRYPTION_KEY is missing. Using fallback derived from JWT_SECRET.");
+      return crypto.createHash("sha256").update(`${process.env.JWT_SECRET}:phone_encryption`).digest();
+    }
     throw new Error("PHONE_ENCRYPTION_KEY environment variable is missing");
   }
   const key = Buffer.from(keyBase64, "base64");
@@ -15,6 +19,10 @@ const getEncryptionKey = (): Buffer => {
 const getLookupSecret = (): Buffer => {
   const secretBase64 = process.env.PHONE_LOOKUP_SECRET;
   if (!secretBase64) {
+    if (process.env.JWT_SECRET) {
+      console.warn("PHONE_LOOKUP_SECRET is missing. Using fallback derived from JWT_SECRET.");
+      return crypto.createHash("sha256").update(`${process.env.JWT_SECRET}:phone_lookup`).digest();
+    }
     throw new Error("PHONE_LOOKUP_SECRET environment variable is missing");
   }
   const secret = Buffer.from(secretBase64, "base64");
@@ -23,6 +31,7 @@ const getLookupSecret = (): Buffer => {
   }
   return secret;
 };
+
 
 export const normalizePhoneNumber = (phoneNumber: string): string => {
   const cleaned = phoneNumber.replace(/[\s\-()]/g, "");

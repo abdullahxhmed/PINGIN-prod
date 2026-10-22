@@ -1,6 +1,7 @@
 import express from "express";
 import asyncHandler from "express-async-handler";
-import { createResource, deleteResourceById, getResourceById, getResources, modifyResourceById, getResourceCalls } from "./resources.services.js";
+import { createResource, deleteResourceById, getResourceById, getResources, modifyResourceById, getResourceCalls, getResourceAnalytics } from "./resources.services.js";
+
 import { BadRequestError } from "../../errors/AppError.js";
 
 /**
@@ -126,6 +127,22 @@ const getResourceCallsController = asyncHandler(async (req, res, next) => {
     res.status(200).json(result);
 });
 
+/**
+ * @description Get privacy-safe analytics for a specific resource
+ * @route GET /api/resources/:id/analytics
+ * @access private
+ */
+const getResourceAnalyticsController = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  if (typeof id !== "string") {
+    throw new BadRequestError("Resource ID is required");
+  }
+
+  const analytics = await getResourceAnalytics(id, req.user.id);
+  res.status(200).json(analytics);
+});
+
 export {
     createResourceController,
     getResourceController,
@@ -133,4 +150,5 @@ export {
     modifyResourceByIdController,
     deleteResourceByIdController,
     getResourceCallsController,
+    getResourceAnalyticsController,
 }
