@@ -30,8 +30,8 @@ import cors from "cors";
 app.use(
   cors({
     origin: [
-      "https://pingin.co.in",
-      "https://www.pingin.co.in",
+      "https://kauntact.in",
+      "https://www.kauntact.in",
       "http://localhost:5173"
     ],
     credentials: true,
