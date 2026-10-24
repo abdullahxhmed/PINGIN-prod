@@ -66,10 +66,11 @@ const refreshAccessToken = async (refreshToken:string) => {
 
 }
 
-const getCurrentUser = async (userId:string) => {
-    const start = performance.now();
-    const user = prisma.user.findUnique({
-        where:{
+import { getUserSubscription } from "../subscriptions/subscriptions.services.js";
+
+const getCurrentUser = async (userId: string) => {
+    const user = await prisma.user.findUnique({
+        where: {
             id: userId,
             active: true
         },
@@ -79,16 +80,29 @@ const getCurrentUser = async (userId:string) => {
             mobileNumber: true,
             role: true,
             contactEndpoint: {
-                select:{
-                    type:true,
-                    phoneNumber:true,
+                select: {
+                    type: true,
+                    phoneNumber: true,
                 },
             },
         },
     });
-    console.log("Prisma:", performance.now() - start);
-    return user;
-}
+
+    if (!user) return null;
+
+    const subData = await getUserSubscription(userId);
+
+    return {
+        ...user,
+        subscription: subData.subscription,
+        tagQuota: {
+            activeCount: subData.tags.activeCount,
+            suspendedCount: subData.tags.suspendedCount,
+            maxLimit: subData.subscription.maxActiveTags,
+            needsTagSelection: subData.tags.needsTagSelection,
+        },
+    };
+};
 
 
 

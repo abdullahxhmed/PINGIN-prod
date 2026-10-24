@@ -7,6 +7,7 @@ import {
   NotFoundError,
 } from "../../errors/AppError.js";
 import { QrAssignmentMethod, QrTagOrigin, QrTagStatus } from "@prisma/client";
+import { getUserSubscription } from "../subscriptions/subscriptions.services.js";
 
 // Crockford-style character sets excluding visually ambiguous characters: 0, 1, I, O, L
 const LETTER_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ"; // 23 letters (no I, L, O)
@@ -165,6 +166,16 @@ export const resolveTagToken = async (rawToken: string) => {
     };
   }
 
+  if (tag.status === QrTagStatus.SUSPENDED) {
+    return {
+      status: QrTagStatus.SUSPENDED,
+      action: "SUSPENDED" as const,
+      tagNumber: tag.tagNumber,
+      message: "This QR tag is currently suspended due to subscription plan limits.",
+      redirectUrl: `/tag/suspended?tag=${tag.tagNumber}`,
+    };
+  }
+
   if (tag.status === QrTagStatus.UNASSIGNED || !tag.resourceId || !tag.resource) {
     return {
       status: QrTagStatus.UNASSIGNED,
@@ -309,6 +320,25 @@ export const pairQrTag = async ({
     if (!replaceExistingOnResource) {
       throw new ConflictError(
         `This resource already has a different QR tag assigned (${existingTagOnTargetResource.tagNumber}). Set replaceExistingOnResource to true to replace it.`
+      );
+    }
+  }
+
+  // 4b. Enforce active tag limits from user's subscription
+  const isReplacingOnResource = Boolean(
+    existingTagOnTargetResource &&
+      existingTagOnTargetResource.id !== tag.id &&
+      existingTagOnTargetResource.status === QrTagStatus.ASSIGNED
+  );
+  const isMovingOwnAssignedTag = Boolean(
+    tag.status === QrTagStatus.ASSIGNED && tag.resource?.userId === userId
+  );
+
+  if (!isReplacingOnResource && !isMovingOwnAssignedTag) {
+    const { subscription, tags } = await getUserSubscription(userId);
+    if (tags.activeCount >= subscription.maxActiveTags) {
+      throw new ForbiddenError(
+        `Active tag limit reached (${tags.activeCount}/${subscription.maxActiveTags}) on your ${subscription.tier} plan. Please upgrade to the Plus subscription to activate up to 8 tags.`
       );
     }
   }

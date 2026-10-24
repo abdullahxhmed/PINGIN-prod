@@ -57,7 +57,27 @@ enum QrTagOrigin {
 enum QrTagStatus {
   UNASSIGNED
   ASSIGNED
+  SUSPENDED
   REVOKED
+}
+
+enum SubscriptionTier {
+  BASIC
+  PLUS
+}
+
+enum PurchasePackType {
+  PACK_179
+  PACK_499
+  PLUS_RENEWAL
+  CUSTOM
+}
+
+enum PurchaseStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
 }
 
 enum QrAssignmentMethod {
@@ -91,9 +111,11 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  contactEndpoint ContactEndpoint?
-  resources       Resource[]
-  refreshTokens   RefreshToken[]
+  contactEndpoint       ContactEndpoint?
+  resources             Resource[]
+  refreshTokens         RefreshToken[]
+  subscription          Subscription?
+  subscriptionPurchases SubscriptionPurchase[]
 }
 
 model ContactEndpoint {
@@ -300,5 +322,56 @@ model TagVisit {
 
   @@index([resourceId, createdAt])
   @@index([createdAt])
+}
+
+model Subscription {
+  id                String           @id @default(uuid()) @db.Uuid
+  userId            String           @unique @db.Uuid
+
+  tier              SubscriptionTier @default(BASIC)
+  maxActiveTags     Int              @default(2)
+  hasWhatsappAlerts Boolean          @default(false)
+  hasAnalytics      Boolean          @default(false)
+
+  startsAt          DateTime         @default(now())
+  expiresAt         DateTime?
+
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([tier, expiresAt])
+}
+
+model SubscriptionPurchase {
+  id                 String           @id @default(uuid()) @db.Uuid
+  userId             String           @db.Uuid
+
+  packType           PurchasePackType
+  amountPaise        Int
+  currency           String           @default("INR")
+
+  // Immutable snapshot of the product purchased.
+  tagsIncluded       Int              @default(0)
+  plusDurationMonths Int              @default(0)
+
+  status             PurchaseStatus   @default(PENDING)
+
+  paymentProvider    String?
+  providerOrderId    String?
+  providerPaymentId  String?
+
+  metadata           Json?
+  completedAt        DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([paymentProvider, providerOrderId])
+  @@unique([paymentProvider, providerPaymentId])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
 }
 

@@ -13,6 +13,7 @@ import vehicleRoutes from "./modules/vehicle-details/vehicleDetail.routes.js"
 import qrRoutes from "./modules/qr/qr.routes.js";
 import { redirectTagScanController } from "./modules/qr/qr.controllers.js";
 import adminRoutes from "./modules/admin/admin.routes.js";
+import subscriptionRoutes from "./modules/subscriptions/subscriptions.routes.js";
 import { apiRateLimiter } from "./middleware/rate-limiter.js";
 
 
@@ -55,6 +56,7 @@ app.use('/api/vehicle-details', apiRateLimiter,vehicleRoutes);
 app.use('/api/contact', apiRateLimiter, contactRoutes)
 app.use('/api/auth',apiRateLimiter, authRoutes);
 app.use('/api/qr', apiRateLimiter, qrRoutes);
+app.use('/api/subscriptions', apiRateLimiter, subscriptionRoutes);
 app.use('/api/admin', apiRateLimiter, adminRoutes);
 
 // Permanent physical tag scanner redirects (/t/:token and legacy /qr/:token)

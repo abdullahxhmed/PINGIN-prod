@@ -1,9 +1,10 @@
 import { ResourceType, QrTagStatus } from "@prisma/client";
 import { randomBytes } from "crypto";
-import { InternalError, NotFoundError } from "../../errors/AppError.js";
+import { ForbiddenError, InternalError, NotFoundError } from "../../errors/AppError.js";
 import { prisma } from "../../lib/prisma.js";
 import { buildContactUrl } from "../public-contact/contact.services.js";
 import { decryptPhoneNumber } from "../../utils/phone-encryption.js";
+import { getUserSubscription } from "../subscriptions/subscriptions.services.js";
 
 type vehicleDetailsInput = {
     registrationNum?:string;
@@ -410,6 +411,16 @@ const getResourceAnalytics = async (resourceId: string, userId: string) => {
 
   if (!resource) {
     throw new NotFoundError("Resource not found");
+  }
+
+  // Analytics is exclusive to Plus subscription
+  if (!isAdmin) {
+    const { subscription } = await getUserSubscription(userId);
+    if (!subscription.hasAnalytics) {
+      throw new ForbiddenError(
+        "Analytics is an exclusive Plus subscription feature. Upgrade to the Plus subscription to view visitor scans, device breakdown, and traffic insights."
+      );
+    }
   }
 
   const [
