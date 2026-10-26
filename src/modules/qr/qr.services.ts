@@ -6,8 +6,8 @@ import {
   ForbiddenError,
   NotFoundError,
 } from "../../errors/AppError.js";
-import { QrAssignmentMethod, QrTagOrigin, QrTagStatus } from "@prisma/client";
-import { getUserSubscription } from "../subscriptions/subscriptions.services.js";
+import { GrantStatus, QrAssignmentMethod, QrTagOrigin, QrTagStatus, QrTagStockState } from "@prisma/client";
+import { getUserSubscription, activateUserPlusSubscription } from "../subscriptions/subscriptions.services.js";
 
 // Crockford-style character sets excluding visually ambiguous characters: 0, 1, I, O, L
 const LETTER_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ"; // 23 letters (no I, L, O)
@@ -283,6 +283,23 @@ export const pairQrTag = async ({
     throw new BadRequestError("This QR tag has been revoked and cannot be paired.");
   }
 
+  // 2b. Commerce / Inventory Check: Preprinted tags must have been sold/allocated
+  const stockRecord = await prisma.qrTagInventory.findUnique({
+    where: { qrTagId: tag.id },
+  });
+  if (stockRecord) {
+    const allowedStates: QrTagStockState[] = [
+      QrTagStockState.ALLOCATED_TO_ORDER,
+      QrTagStockState.DISPATCHED,
+      QrTagStockState.DELIVERED,
+    ];
+    if (!allowedStates.includes(stockRecord.state)) {
+      throw new ForbiddenError(
+        `This QR tag is not eligible for pairing (current state: ${stockRecord.state}).`
+      );
+    }
+  }
+
   // 3. FOOLPROOF CHECK: Prevent claiming an already assigned tag without owner permission
   if (tag.status === QrTagStatus.ASSIGNED && tag.resource) {
     // If assigned to a different user, REJECT!
@@ -336,9 +353,19 @@ export const pairQrTag = async ({
 
   if (!isReplacingOnResource && !isMovingOwnAssignedTag) {
     const { subscription, tags } = await getUserSubscription(userId);
-    if (tags.activeCount >= subscription.maxActiveTags) {
+
+    // If user has a pending PLUS grant waiting to be redeemed upon pairing, allow up to Plus limits (8)
+    const hasPendingPlusGrant = await prisma.subscriptionGrant.findFirst({
+      where: {
+        userId,
+        status: GrantStatus.PENDING_PAIRING,
+      },
+    });
+
+    const maxLimit = hasPendingPlusGrant ? 8 : subscription.maxActiveTags;
+    if (tags.activeCount >= maxLimit) {
       throw new ForbiddenError(
-        `Active tag limit reached (${tags.activeCount}/${subscription.maxActiveTags}) on your ${subscription.tier} plan. Please upgrade to the Plus subscription to activate up to 8 tags.`
+        `Active tag limit reached (${tags.activeCount}/${maxLimit}) on your account.`
       );
     }
   }
@@ -407,11 +434,45 @@ export const pairQrTag = async ({
       },
     });
 
-    return { updatedTag, newAssignment };
+    // Step 5: Subscription is account-level. Check if this account has an unredeemed PLUS grant
+    // created at/before pairing. The pairing can trigger redemption regardless of where tag came from.
+    const pendingGrant = await tx.subscriptionGrant.findFirst({
+      where: {
+        userId,
+        status: GrantStatus.PENDING_PAIRING,
+        createdAt: { lte: now },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
+    let activatedPlus = false;
+    let plusDurationMonths = 0;
+    if (pendingGrant) {
+      const redeemed = await tx.subscriptionGrant.updateMany({
+        where: { id: pendingGrant.id, userId, status: GrantStatus.PENDING_PAIRING },
+        data: {
+          status: GrantStatus.ACTIVATED,
+          activatedAt: now,
+          triggeringQrTagId: tag.id,
+        },
+      });
+
+      if (redeemed.count === 1) {
+        await activateUserPlusSubscription(tx, userId, pendingGrant.plusDurationMonths);
+        activatedPlus = true;
+        plusDurationMonths = pendingGrant.plusDurationMonths;
+      }
+    }
+
+    return { updatedTag, newAssignment, activatedPlus, plusDurationMonths };
   });
 
   return {
-    message: "QR tag successfully paired.",
+    message: result.activatedPlus
+      ? `QR tag successfully paired! PLUS subscription activated for ${result.plusDurationMonths} months.`
+      : "QR tag successfully paired under BASIC plan.",
+    activatedPlus: result.activatedPlus,
+    plusDurationMonths: result.plusDurationMonths,
     tag: {
       id: result.updatedTag.id,
       tagNumber: result.updatedTag.tagNumber,

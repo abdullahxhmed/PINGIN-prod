@@ -34,6 +34,7 @@ enum CommunicationSessionStatus {
 enum OtpPurpose {
   SIGNUP
   LOGIN
+  CLAIM_PURCHASE
 }
 
 enum CommunicationSessionType {
@@ -98,6 +99,113 @@ enum DeviceType {
   UNKNOWN
 }
 
+enum ProductType {
+  VEHICLE_STICKER
+  KEYCHAIN
+  MINI_STICKER
+  COMBO_PACK
+  PHYSICAL_TAG_PACK
+  SUBSCRIPTION_ONLY
+  MERCHANDISE
+}
+
+enum ComponentType {
+  SERIALIZED_QR_TAG
+  PHYSICAL_ITEM
+  DIGITAL_ENTITLEMENT
+}
+
+enum ReservationStatus {
+  ACTIVE
+  COMMITTED
+  RELEASED
+  EXPIRED
+}
+
+enum QrTagStockState {
+  GENERATED
+  SENT_TO_PRINT
+  IN_STOCK
+  RESERVED
+  ALLOCATED_TO_ORDER
+  DISPATCHED
+  DELIVERED
+  DAMAGED
+  RETURNED_TO_STOCK
+}
+
+enum PrintBatchStatus {
+  GENERATED
+  PRINTING
+  PARTIALLY_RECEIVED
+  STOCKED
+  RECONCILIATION_REQUIRED
+  CANCELLED
+}
+
+enum OrderStatus {
+  PAYMENT_PENDING
+  PAID
+  PACKING
+  PACKED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+  RECONCILIATION_REQUIRED
+}
+
+enum PackingSessionStatus {
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUNDED
+  RECONCILIATION_REQUIRED
+}
+
+enum GrantStatus {
+  PENDING_CLAIM
+  PENDING_PAIRING
+  ACTIVATED
+  REVOKED
+}
+
+enum ShippingStatus {
+  PENDING
+  AWB_ASSIGNED
+  PICKUP_SCHEDULED
+  IN_TRANSIT
+  OUT_FOR_DELIVERY
+  DELIVERED
+  RTO_INITIATED
+  RTO_DELIVERED
+}
+
+enum WebhookProcessingStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  RETRY
+  FAILED
+  DEAD_LETTER
+  IGNORED
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  RETRY
+  DEAD_LETTER
+}
+
 // DATABASE TABLES
 
 model User {
@@ -116,6 +224,10 @@ model User {
   refreshTokens         RefreshToken[]
   subscription          Subscription?
   subscriptionPurchases SubscriptionPurchase[]
+  inventoryReservations InventoryReservation[]
+  orders                Order[]
+  subscriptionGrants    SubscriptionGrant[]
+  purchaseClaims        PurchaseClaim[]
 }
 
 model ContactEndpoint {
@@ -282,8 +394,12 @@ model QrTag {
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @updatedAt
 
-  assignments QrAssignment[]
-  tagVisits   TagVisit[]
+  inventory        QrTagInventory?
+  assignments      QrAssignment[]
+  tagVisits        TagVisit[]
+  reservedTags     ReservedTag[]
+  orderAllocations OrderTagAllocation[]
+  packingScans     PackingScan[]
 }
 
 model QrAssignment {
@@ -374,4 +490,576 @@ model SubscriptionPurchase {
   @@index([userId, createdAt])
   @@index([status, createdAt])
 }
+
+// CATALOG & PRODUCT CONFIGURATOR
+
+model Product {
+  id          String      @id @default(uuid()) @db.Uuid
+  sku         String      @unique
+  name        String
+  slug        String      @unique
+  description String?
+  type        ProductType @default(PHYSICAL_TAG_PACK)
+  active      Boolean     @default(true)
+  basePrice   Int         // In paise (e.g., 49900 = 499 INR)
+  currency    String      @default("INR")
+
+  // Storefront artwork (explicit, type-safe nullable URL)
+  imageUrl      String?
+
+  // Storefront curation and order
+  isFeatured    Boolean   @default(false)
+  displayOrder  Int       @default(0)
+
+  weightGrams Int         @default(100)
+  lengthCm    Float       @default(15.0)
+  breadthCm   Float       @default(10.0)
+  heightCm    Float       @default(2.0)
+
+  variants             ProductVariant[]
+  batches              PrintBatch[]
+  storefrontSlots      StorefrontSlot[]
+  slotHistoryPrevious  StorefrontSlotHistory[] @relation("SlotHistoryPrevious")
+  slotHistoryNew       StorefrontSlotHistory[] @relation("SlotHistoryNew")
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+
+  @@index([displayOrder, createdAt])
+}
+
+
+model ProductVariant {
+  id               String             @id @default(uuid()) @db.Uuid
+  productId        String             @db.Uuid
+  sku              String             @unique
+  name             String
+  price            Int                // In paise
+  imageUrl         String?            // Variant-specific artwork (falls back to parent product imageUrl if null)
+  active           Boolean            @default(true)
+
+  product          Product            @relation(fields: [productId], references: [id], onDelete: Cascade)
+  components       ProductComponent[]
+  batches          PrintBatch[]
+  reservationItems ReservationItem[]
+  orderItems       OrderItem[]
+  storefrontSlots  StorefrontSlot[]
+  slotHistoryPrevious StorefrontSlotHistory[] @relation("SlotHistoryPreviousVariant")
+  slotHistoryNew      StorefrontSlotHistory[] @relation("SlotHistoryNewVariant")
+
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@index([productId])
+}
+
+model ProductComponent {
+  id                 String         @id @default(uuid()) @db.Uuid
+  variantId          String         @db.Uuid
+  componentType      ComponentType
+  name               String
+  quantity           Int            @default(1)
+  plusDurationMonths Int            @default(0)
+  inventorySku       String?
+
+  variant            ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  reservedTags       ReservedTag[]
+
+  @@index([variantId])
+}
+
+// PRINT CONFIGURATION & PRODUCTION BATCHES
+
+model PrintProfile {
+  id           String          @id @default(uuid()) @db.Uuid
+  sku          String          @unique // Canonical inventory SKU (e.g., "TAG-VEHICLE-STICKER")
+  name         String          // e.g. "Standard Windshield Vinyl Profile"
+  widthMm      Float           // e.g. 100.0
+  heightMm     Float           // e.g. 100.0
+  shape        String          @default("CIRCLE") // CIRCLE, RECTANGLE, ROUNDED_RECT
+  material     String          // e.g. "120 GSM Outdoor Vinyl"
+  finish       String          // e.g. "Matte UV Lamination"
+  bleedMm      Float           @default(2.0)
+  safeMarginMm Float           @default(3.0)
+  active       Boolean         @default(true)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  templates    PrintTemplate[]
+  batches      PrintBatch[]
+
+  @@index([sku])
+}
+
+model PrintTemplate {
+  id                String       @id @default(uuid()) @db.Uuid
+  profileId         String       @db.Uuid
+  name              String       // e.g. "KaunTact Official White Decal"
+  version           Int          @default(1)
+  isDefault         Boolean      @default(false)
+  active            Boolean      @default(true)
+
+  // Layout & positioning
+  qrXPosition       Float        @default(0)
+  qrYPosition       Float        @default(0)
+  qrSizeMm          Float        @default(30.0)
+  tagNumberPosition String       @default("BELOW_QR")
+  typographyJson    Json?
+  brandingAssets    Json?
+
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  profile           PrintProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  batches           PrintBatch[]
+
+  @@index([profileId, isDefault])
+}
+
+model PrintBatch {
+  id                String           @id @default(uuid()) @db.Uuid
+  batchNumber       String           @unique // e.g. "PRN-VEH-20261026-0001"
+  sku               String           // Physical component inventorySku
+  status            PrintBatchStatus @default(GENERATED)
+  vendorName        String?
+
+  // Variant & Product relationships
+  variantId         String?          @db.Uuid
+  productId         String?          @db.Uuid
+
+  // Quantities
+  quantityRequested Int              // Total tags assigned to this batch
+  quantityReceived  Int              @default(0) // Cumulative physical tags received at dock
+  quantityAccepted  Int              @default(0) // Physical tags verified and activated into IN_STOCK
+  quantityDefective Int              @default(0) // Defective/damaged physical tags rejected
+
+  // Immutable snapshots of print profile, template, and variant at dispatch
+  profileId         String?          @db.Uuid
+  templateId        String?          @db.Uuid
+  profileSnapshot   Json?
+  templateSnapshot  Json?
+  variantSnapshot   Json?            // Snapshot: variant name, sku, resolved artwork URL, dimensions
+
+  dispatchedAt      DateTime?
+  stockedAt         DateTime?
+  notes             String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  variant           ProductVariant?  @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  product           Product?         @relation(fields: [productId], references: [id], onDelete: SetNull)
+  profile           PrintProfile?    @relation(fields: [profileId], references: [id], onDelete: SetNull)
+  template          PrintTemplate?   @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  tags              QrTagInventory[]
+  receipts          PrintBatchReceipt[]
+
+  @@index([sku, status])
+  @@index([variantId])
+  @@index([productId])
+}
+
+model PrintBatchReceipt {
+  id                 String      @id @default(uuid()) @db.Uuid
+  receiptNumber      String      @unique // e.g. "RCP-PRN-VEH-20261027-1042-01"
+  printBatchId       String      @db.Uuid
+  idempotencyKey     String?     @unique
+
+  receivedQuantity   Int         // Delivered in this specific shipment
+  acceptedQuantity   Int         // Moved to IN_STOCK in this shipment
+  defectiveQuantity  Int         // Marked DAMAGED in this shipment
+  missingQuantity    Int         @default(0) // Discrepancy acknowledged in this receipt
+
+  defectiveTagNumbers Json?      // JSON string[] of specific tag numbers rejected
+
+  receivedBy         String?
+  notes              String?
+  receivedAt         DateTime    @default(now())
+
+  printBatch         PrintBatch  @relation(fields: [printBatchId], references: [id], onDelete: Cascade)
+
+  @@index([printBatchId])
+  @@index([idempotencyKey])
+}
+
+// INVENTORY & RESERVATIONS
+
+model InventoryStock {
+  id             String   @id @default(uuid()) @db.Uuid
+  sku            String   @unique
+  name           String
+  quantityOnHand Int      @default(0)
+  reservedCount  Int      @default(0)
+  reorderLevel   Int      @default(50)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model QrTagInventory {
+  id                  String                @id @default(uuid()) @db.Uuid
+  qrTagId             String                @unique @db.Uuid
+  sku                 String
+  state               QrTagStockState       @default(GENERATED)
+  printBatchId        String?               @db.Uuid
+  activeReservationId String?               @db.Uuid
+  updatedAt           DateTime              @updatedAt
+
+  qrTag               QrTag                 @relation(fields: [qrTagId], references: [id], onDelete: Restrict)
+  printBatch          PrintBatch?           @relation(fields: [printBatchId], references: [id], onDelete: SetNull)
+  activeReservation   InventoryReservation? @relation(fields: [activeReservationId], references: [id], onDelete: SetNull)
+
+  @@index([sku, state])
+  @@index([printBatchId])
+  @@index([state, activeReservationId])
+}
+
+model InventoryReservation {
+  id                   String            @id @default(uuid()) @db.Uuid
+  checkoutSessionId    String            @unique
+  userId               String?           @db.Uuid
+  orderId              String?           @unique @db.Uuid
+  status               ReservationStatus @default(ACTIVE)
+  expiresAt            DateTime
+  releasedAt           DateTime?
+  committedAt          DateTime?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  user                 User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  items                ReservationItem[]
+  order                Order?
+  reservedTagInventory QrTagInventory[]
+
+  @@index([userId, status])
+  @@index([status, expiresAt])
+}
+
+model ReservationItem {
+  id             String               @id @default(uuid()) @db.Uuid
+  reservationId  String               @db.Uuid
+  variantId      String               @db.Uuid
+  quantity       Int                  @default(1)
+
+  reservation    InventoryReservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  variant        ProductVariant       @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  allocatedTags  ReservedTag[]
+
+  @@index([reservationId])
+}
+
+model ReservedTag {
+  id                String           @id @default(uuid()) @db.Uuid
+  reservationItemId String           @db.Uuid
+  componentId       String           @db.Uuid
+  qrTagId           String           @db.Uuid
+
+  reservationItem   ReservationItem  @relation(fields: [reservationItemId], references: [id], onDelete: Cascade)
+  component         ProductComponent @relation(fields: [componentId], references: [id], onDelete: Cascade)
+  qrTag             QrTag            @relation(fields: [qrTagId], references: [id], onDelete: Restrict)
+
+  @@index([qrTagId])
+  @@index([componentId])
+}
+
+// ORDERS, PAYMENTS, CLAIMS & FULFILLMENT
+
+model Order {
+  id                     String                 @id @default(uuid()) @db.Uuid
+  orderNumber            String                 @unique
+  userId                 String?                @db.Uuid // Nullable for guest checkout
+  customerEmail          String?
+  customerPhone          String?
+  reservationId          String                 @unique @db.Uuid
+  razorpayOrderId        String?                @unique
+  checkoutIdempotencyKey String?                @unique
+
+  status                 OrderStatus            @default(PAYMENT_PENDING)
+  subtotalAmount         Int                    // In paise
+  taxAmount              Int                    @default(0)
+  shippingAmount         Int                    @default(0)
+  totalAmount            Int                    // In paise
+  currency               String                 @default("INR")
+
+  reservation            InventoryReservation   @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  user                   User?                  @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  shippingAddress        ShippingAddress?
+  items                  OrderItem[]
+  payments               PaymentTransaction[]
+  shipments              Shipment[]
+  packingSessions        PackingSession[]
+  tagAllocations         OrderTagAllocation[]
+  subscriptionGrants     SubscriptionGrant[]
+  purchaseClaim          PurchaseClaim?
+
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+
+  @@index([userId, status])
+  @@index([customerEmail])
+  @@index([customerPhone])
+  @@index([razorpayOrderId])
+}
+
+model ShippingAddress {
+  id           String   @id @default(uuid()) @db.Uuid
+  orderId      String   @unique @db.Uuid
+  fullName     String
+  phoneNumber  String
+  addressLine1 String
+  addressLine2 String?
+  city         String
+  state        String
+  postalCode   String
+  country      String   @default("IN")
+
+  order        Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model OrderItem {
+  id              String         @id @default(uuid()) @db.Uuid
+  orderId         String         @db.Uuid
+  variantId       String         @db.Uuid
+
+  quantity        Int            @default(1)
+  unitPrice       Int            // In paise
+  totalPrice      Int            // quantity * unitPrice
+  productSnapshot Json           // Immutable snapshot of variant, BOM components, and digital perks
+
+  order           Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variant         ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  packingScans    PackingScan[]
+
+  @@index([orderId])
+}
+
+model OrderTagAllocation {
+  id        String   @id @default(uuid()) @db.Uuid
+  orderId   String   @db.Uuid
+  qrTagId   String   @unique @db.Uuid
+  createdAt DateTime @default(now())
+
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  qrTag     QrTag    @relation(fields: [qrTagId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+}
+
+model PackingSession {
+  id            String               @id @default(uuid()) @db.Uuid
+  orderId       String               @db.Uuid
+  sessionNumber Int                  @default(1)
+  packedBy      String?
+  status        PackingSessionStatus @default(IN_PROGRESS)
+  startedAt     DateTime             @default(now())
+  completedAt   DateTime?
+
+  order         Order                @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  scans         PackingScan[]
+
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  @@unique([orderId, sessionNumber])
+  @@index([orderId, status])
+}
+
+model PackingScan {
+  id               String         @id @default(uuid()) @db.Uuid
+  packingSessionId String         @db.Uuid
+  orderItemId      String         @db.Uuid
+  qrTagId          String         @db.Uuid
+  scannedTagNumber String
+  scannedAt        DateTime       @default(now())
+
+  packingSession   PackingSession @relation(fields: [packingSessionId], references: [id], onDelete: Cascade)
+  orderItem        OrderItem      @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+  qrTag            QrTag          @relation(fields: [qrTagId], references: [id], onDelete: Restrict)
+
+  @@unique([packingSessionId, qrTagId])
+  @@index([orderItemId])
+}
+
+model SubscriptionGrant {
+  id                 String      @id @default(uuid()) @db.Uuid
+  userId             String?     @db.Uuid // Null until claimed
+  orderId            String      @db.Uuid
+  grantKey           String      @unique // e.g. "order:<orderId>:plus"
+  plusDurationMonths Int         @default(12)
+  status             GrantStatus @default(PENDING_CLAIM)
+
+  createdAt          DateTime    @default(now())
+  activatedAt        DateTime?
+  triggeringQrTagId  String?     @db.Uuid
+
+  order              Order       @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  user               User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([orderId])
+  @@index([userId, status])
+}
+
+model PurchaseClaim {
+  id                 String   @id @default(uuid()) @db.Uuid
+  orderId            String   @unique @db.Uuid
+  userId             String   @db.Uuid
+  verificationMethod String   // e.g. "EMAIL_OTP", "PHONE_OTP"
+  verifiedAt         DateTime
+  claimedAt          DateTime @default(now())
+
+  order              Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  user               User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, claimedAt])
+}
+
+model PaymentTransaction {
+  id                 String        @id @default(uuid()) @db.Uuid
+  orderId            String        @db.Uuid
+  provider           String        @default("RAZORPAY")
+  status             PaymentStatus @default(PENDING)
+
+  amount             Int           // In paise
+  currency           String        @default("INR")
+
+  razorpayOrderId    String
+  razorpayPaymentId  String?       @unique
+  razorpaySignature  String?
+  capturedAt         DateTime?
+  failureCode        String?
+  errorDescription   String?
+  rawWebhookPayload  Json?
+
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  order              Order         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId, status])
+  @@index([razorpayOrderId])
+}
+
+model WebhookInbox {
+  id            String                  @id @default(uuid()) @db.Uuid
+  provider      String                  @default("RAZORPAY")
+  eventId       String                  @unique // Unique event ID from provider (e.g. x-razorpay-event-id)
+  eventType     String
+  payload       Json
+  status        WebhookProcessingStatus @default(PENDING)
+  attempts      Int                     @default(0)
+  nextAttemptAt DateTime?
+  lastError     String?
+  receivedAt    DateTime                @default(now())
+  processedAt   DateTime?
+
+  @@index([provider, eventType])
+  @@index([status, nextAttemptAt, receivedAt])
+}
+
+model OutboxJob {
+  id          String       @id @default(uuid()) @db.Uuid
+  type        String       // e.g. PAYMENT_RECONCILE, FULFILL_ORDER, REQUEST_REFUND
+  dedupeKey   String       @unique
+  payload     Json
+  status      OutboxStatus @default(PENDING)
+  attempts    Int          @default(0)
+  availableAt DateTime     @default(now())
+  lockedAt    DateTime?
+  lockedBy    String?
+  completedAt DateTime?
+  lastError   String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([status, availableAt])
+}
+
+model Shipment {
+  id                   String         @id @default(uuid()) @db.Uuid
+  orderId              String         @db.Uuid
+  status               ShippingStatus @default(PENDING)
+
+  courierName          String?
+  shiprocketOrderId    String?        @unique
+  shiprocketShipmentId String?        @unique
+  awbCode              String?        @unique
+  trackingUrl          String?
+
+  labelUrl             String?
+  manifestUrl          String?
+
+  shippedAt            DateTime?
+  deliveredAt          DateTime?
+
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  order                Order          @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([awbCode])
+}
+
+// ---------------------------------------------------------------------------
+// STOREFRONT SLOTS & DYNAMIC LAYOUT MANAGEMENT
+// ---------------------------------------------------------------------------
+
+enum StorefrontSlotType {
+  BUNDLE
+  INDIVIDUAL
+}
+
+model StorefrontSlot {
+  id           String                 @id @default(uuid()) @db.Uuid
+  slotKey      String                 @unique
+  label        String
+  slotType     StorefrontSlotType     @default(INDIVIDUAL)
+  displayOrder Int                    @default(0)
+  active       Boolean                @default(true)
+
+  productId    String?                @db.Uuid
+  product      Product?               @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  variantId    String?                @db.Uuid
+  variant      ProductVariant?        @relation(fields: [variantId], references: [id], onDelete: SetNull)
+
+  history      StorefrontSlotHistory[]
+
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+
+  @@index([slotType, displayOrder])
+  @@index([active, displayOrder])
+  @@index([variantId])
+}
+
+model StorefrontSlotHistory {
+  id                String          @id @default(uuid()) @db.Uuid
+  slotId            String          @db.Uuid
+  slotKey           String
+  slotLabel         String
+  action            String          // "ASSIGN" | "SWAP" | "CLEAR" | "CREATE_SLOT" | "DELETE_SLOT"
+
+  previousProductId String?         @db.Uuid
+  newProductId      String?         @db.Uuid
+
+  previousVariantId String?         @db.Uuid
+  newVariantId      String?         @db.Uuid
+
+  previousProduct   Product?        @relation("SlotHistoryPrevious", fields: [previousProductId], references: [id], onDelete: SetNull)
+  newProduct        Product?        @relation("SlotHistoryNew", fields: [newProductId], references: [id], onDelete: SetNull)
+
+  previousVariant   ProductVariant? @relation("SlotHistoryPreviousVariant", fields: [previousVariantId], references: [id], onDelete: SetNull)
+  newVariant        ProductVariant? @relation("SlotHistoryNewVariant", fields: [newVariantId], references: [id], onDelete: SetNull)
+
+  slot              StorefrontSlot  @relation(fields: [slotId], references: [id], onDelete: Cascade)
+
+  changedBy         String?         // Admin user ID or "admin-key"
+  reason            String?         // Contextual note / campaign name
+  assignedAt        DateTime        @default(now())
+
+  @@index([slotId, assignedAt])
+  @@index([slotKey, assignedAt])
+}
+
+
+
 

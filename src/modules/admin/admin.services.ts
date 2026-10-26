@@ -1,5 +1,5 @@
 import { prisma } from "../../lib/prisma.js";
-import { QrTagStatus, QrTagOrigin } from "@prisma/client";
+import { QrTagStatus, QrTagOrigin, OrderStatus } from "@prisma/client";
 
 // ---------------------------------------------------------------------------
 // USERS
@@ -396,6 +396,10 @@ export const adminDashboardSummary = async () => {
     assignedQrTags,
     totalSessions,
     recentSessions,
+    totalOrders,
+    paidOrders,
+    revenueResult,
+    recentOrders,
   ] = await prisma.$transaction([
     prisma.user.count(),
     prisma.user.count({ where: { active: true } }),
@@ -425,7 +429,38 @@ export const adminDashboardSummary = async () => {
         },
       },
     }),
+    prisma.order.count(),
+    prisma.order.count({ where: { status: OrderStatus.PAID } }),
+    prisma.order.aggregate({
+      where: {
+        status: {
+          in: [
+            OrderStatus.PAID,
+            OrderStatus.PACKING,
+            OrderStatus.PACKED,
+            OrderStatus.SHIPPED,
+            OrderStatus.DELIVERED,
+          ],
+        },
+      },
+      _sum: { totalAmount: true },
+    }),
+    prisma.order.findMany({
+      take: 5,
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        orderNumber: true,
+        status: true,
+        totalAmount: true,
+        customerEmail: true,
+        customerPhone: true,
+        createdAt: true,
+      },
+    }),
   ]);
+
+  const totalRevenuePaise = revenueResult._sum.totalAmount ?? 0;
 
   return {
     users: { total: totalUsers, active: activeUsers },
@@ -434,6 +469,13 @@ export const adminDashboardSummary = async () => {
       total: totalQrTags,
       assigned: assignedQrTags,
       available: totalQrTags - assignedQrTags,
+    },
+    orders: {
+      total: totalOrders,
+      paid: paidOrders,
+      totalRevenuePaise,
+      totalRevenueRupees: Math.round(totalRevenuePaise / 100),
+      recentOrders,
     },
     communications: { totalSessions },
     recentActivity: recentSessions.map((s) => ({

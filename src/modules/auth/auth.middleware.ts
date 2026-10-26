@@ -58,6 +58,26 @@ const authenticateRequest = async (req: Request, res: Response, next: NextFuncti
 
 
 
+export const optionalAuthenticateRequest = async (req: Request, _res: Response, next: NextFunction) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return next();
+    }
+
+    const tokenBearer = authHeader.slice(7);
+    try {
+        const payload: any = jwt.verify(tokenBearer, process.env.JWT_SECRET!);
+        if (typeof payload === "object" && payload && typeof payload.sub === "string") {
+            req.user = { id: payload.sub };
+        }
+    } catch {
+        // Ignored for optional authentication
+    }
+
+    next();
+};
+
 export {
     authenticateRequest
 };
+

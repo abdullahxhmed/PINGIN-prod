@@ -1,5 +1,8 @@
 import express from "express";
 import { requireAdmin } from "../../middleware/admin.middleware.js";
+import adminCatalogRoutes from "./catalog/admin.catalog.routes.js";
+import adminInventoryRoutes from "./inventory/admin.inventory.routes.js";
+import adminOrderRoutes from "./orders/admin.orders.routes.js";
 import {
   adminDashboardController,
   adminListUsersController,
@@ -18,8 +21,24 @@ const router = express.Router();
 router.use(requireAdmin);
 
 // ---------------------------------------------------------------------------
+// Product Catalog Management
+// ---------------------------------------------------------------------------
+router.use("/catalog", adminCatalogRoutes);
+
+// ---------------------------------------------------------------------------
+// QR Tag & Physical Inventory Management
+// ---------------------------------------------------------------------------
+router.use("/inventory", adminInventoryRoutes);
+
+// ---------------------------------------------------------------------------
+// Orders & Fulfillment Management
+// ---------------------------------------------------------------------------
+router.use("/orders", adminOrderRoutes);
+
+// ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
+
 
 /**
  * GET /api/admin/dashboard

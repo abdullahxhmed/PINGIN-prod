@@ -15,6 +15,7 @@
   "license": "MIT",
   "type": "module",
   "dependencies": {
+    "@google-cloud/storage": "^8.4.0",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
     "argon2": "^0.45.1",
@@ -27,6 +28,8 @@
     "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.23.0",
+    "pino": "^10.4.0",
+    "pino-http": "^11.0.0",
     "plivo": "^4.79.0",
     "rate-limit-redis": "^6.0.1",
     "redis": "^6.2.1",
@@ -39,6 +42,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^26.6.2",
     "concurrently": "^10.0.5",
+    "pino-pretty": "^13.2.0",
     "prisma": "^7.10.0",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3"

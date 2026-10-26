@@ -409,3 +409,70 @@ export const getUserPurchases = async (userId: string) => {
     packDetails: PACK_CATALOG[p.packType] || null,
   }));
 };
+
+/**
+ * Transactionally activates or extends a user's PLUS subscription for a specified duration in months.
+ * Restores any previously SUSPENDED tags back to ASSIGNED (up to maxActiveTags limit).
+ */
+export const activateUserPlusSubscription = async (
+  tx: Prisma.TransactionClient,
+  userId: string,
+  durationMonths: number
+) => {
+  const now = new Date();
+  const currentSub = await tx.subscription.findUnique({
+    where: { userId },
+  });
+
+  let baseDate = now;
+  if (
+    currentSub &&
+    currentSub.tier === SubscriptionTier.PLUS &&
+    currentSub.expiresAt &&
+    currentSub.expiresAt > now
+  ) {
+    baseDate = currentSub.expiresAt;
+  }
+
+  const newExpiresAt = new Date(baseDate);
+  newExpiresAt.setMonth(newExpiresAt.getMonth() + (durationMonths > 0 ? durationMonths : 12));
+
+  const plusConfig = PLAN_CONFIGS[SubscriptionTier.PLUS];
+
+  const updatedSub = await tx.subscription.upsert({
+    where: { userId },
+    create: {
+      userId,
+      tier: SubscriptionTier.PLUS,
+      maxActiveTags: plusConfig.maxActiveTags,
+      hasWhatsappAlerts: plusConfig.hasWhatsappAlerts,
+      hasAnalytics: plusConfig.hasAnalytics,
+      startsAt: now,
+      expiresAt: newExpiresAt,
+    },
+    update: {
+      tier: SubscriptionTier.PLUS,
+      maxActiveTags: plusConfig.maxActiveTags,
+      hasWhatsappAlerts: plusConfig.hasWhatsappAlerts,
+      hasAnalytics: plusConfig.hasAnalytics,
+      expiresAt: newExpiresAt,
+    },
+  });
+
+  const suspendedTags = await tx.qrTag.findMany({
+    where: {
+      resource: { userId, active: true },
+      status: QrTagStatus.SUSPENDED,
+    },
+    take: plusConfig.maxActiveTags,
+  });
+
+  for (const tag of suspendedTags) {
+    await tx.qrTag.update({
+      where: { id: tag.id },
+      data: { status: QrTagStatus.ASSIGNED },
+    });
+  }
+
+  return updatedSub;
+};

@@ -10,6 +10,7 @@ declare module "http" {
 declare global {
   namespace Express {
     interface Request {
+      rawBody?: Buffer;
       user: {
         id: string;
         /** Present after requireAdmin; undefined after authenticateRequest alone */
