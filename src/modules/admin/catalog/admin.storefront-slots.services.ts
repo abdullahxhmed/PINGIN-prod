@@ -200,6 +200,8 @@ export async function adminListStorefrontSlots() {
       }
       return {
         ...s,
+        imageUrl: resolvedVariant?.imageUrl || resolvedProduct?.imageUrl || null,
+        imageReference: resolvedVariant?.imageReference || resolvedProduct?.imageReference || null,
         product: resolvedProduct,
         variant: resolvedVariant,
       };

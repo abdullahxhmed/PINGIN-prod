@@ -1,7 +1,7 @@
 import { ComponentType, ProductType } from "@prisma/client";
 import { NotFoundError } from "../../errors/AppError.js";
 import { prisma } from "../../lib/prisma.js";
-import { resolveCatalogImages, resolveImageUrl } from "./catalog-images.service.js";
+import { resolveCatalogImages, resolveImageUrl, resolveVariantImages } from "./catalog-images.service.js";
 
 async function getInventoryStockMap(): Promise<{
   serializedStock: Map<string, number>;
@@ -133,6 +133,9 @@ export const listPublicCatalog = async () => {
     prisma.storefrontSlot.findMany({
       where: { active: true },
       include: {
+        product: {
+          select: { id: true, name: true, sku: true, slug: true, type: true, imageUrl: true, basePrice: true },
+        },
         variant: {
           select: { id: true, name: true, price: true, sku: true, imageUrl: true },
         },
@@ -201,20 +204,38 @@ export const listPublicCatalog = async () => {
     }
   }
 
-  // Resolve signed URLs for variant artwork in activeSlots
+  // Resolve signed URLs for variant and product artwork in activeSlots
   const resolvedActiveSlots = await Promise.all(
     activeSlots.map(async (s) => {
-      let resolvedVariant = s.variant;
+      let resolvedProduct: any = s.product;
+      if (s.product) {
+        const pResolved = await resolveImageUrl(s.product.imageUrl);
+        resolvedProduct = {
+          ...s.product,
+          imageUrl: pResolved?.url ?? s.product.imageUrl ?? null,
+          imageReference: s.product.imageUrl ?? null,
+        };
+      }
+
+      let resolvedVariant: any = s.variant;
       if (s.variant) {
-        const rawVariantImg = s.variant.imageUrl || null;
+        const rawVariantImg = s.variant.imageUrl || s.product?.imageUrl || null;
         const vResolved = await resolveImageUrl(rawVariantImg);
         resolvedVariant = {
           ...s.variant,
           imageUrl: vResolved?.url ?? rawVariantImg ?? null,
+          imageReference: rawVariantImg,
         };
       }
+
+      const slotImageUrl = resolvedVariant?.imageUrl || resolvedProduct?.imageUrl || null;
+      const slotImageRef = resolvedVariant?.imageReference || resolvedProduct?.imageReference || null;
+
       return {
         ...s,
+        imageUrl: slotImageUrl,
+        imageReference: slotImageRef,
+        product: resolvedProduct,
         variant: resolvedVariant,
       };
     })
@@ -232,7 +253,6 @@ export const getPublicStorefrontSlots = async () => {
   const activeSlots = (products as any).activeSlots || [];
   return { slots, activeSlots, products };
 };
-
 
 export const getProductBySlug = async (slugOrId: string) => {
   const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slugOrId);
@@ -277,7 +297,7 @@ export const getVariantById = async (variantId: string) => {
     throw new NotFoundError(`Product variant '${variantId}' not found`);
   }
 
-  return variant;
+  return await resolveVariantImages(variant);
 };
 
 export const seedDefaultCatalog = async () => {

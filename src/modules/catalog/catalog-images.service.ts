@@ -41,32 +41,52 @@ interface CachedSignedUrl {
 const signedUrlCache = new Map<string, CachedSignedUrl>();
 
 /**
- * Normalizes an object path by stripping gs:// or bucketName prefixes if present.
+ * Normalizes an object path by stripping gs://, bucket prefixes, and any signed URL query strings.
+ * Handles:
+ * - Direct object keys: product_images/vehicle_stickers/kauntactLight.png
+ * - gs:// URI: gs://bucket/product_images/vehicle_stickers/kauntactLight.png
+ * - Path-style signed or direct URLs: https://storage.googleapis.com/bucket/product_images/...
+ * - Cloud console URLs: https://storage.cloud.google.com/bucket/product_images/...
+ * - Virtual-hosted style URLs: https://bucket.storage.googleapis.com/product_images/...
  */
 export function normalizeObjectPath(rawPath: string, bucketName: string): string {
+  if (!rawPath) return "";
   let cleaned = rawPath.trim();
+  if (!cleaned) return "";
+
   // Strip query parameters and hashes (e.g. from previously signed or expired GCS URLs)
   cleaned = (cleaned.split("?")[0] || "").split("#")[0] || "";
 
+  // Handle gs:// protocol
   if (bucketName && cleaned.startsWith(`gs://${bucketName}/`)) {
-    return cleaned.slice(`gs://${bucketName}/`.length);
+    return decodeURIComponent(cleaned.slice(`gs://${bucketName}/`.length));
   }
   if (cleaned.startsWith("gs://")) {
     const afterProtocol = cleaned.slice(5);
     const slashIdx = afterProtocol.indexOf("/");
-    return slashIdx !== -1 ? afterProtocol.slice(slashIdx + 1) : afterProtocol;
+    return decodeURIComponent(slashIdx !== -1 ? afterProtocol.slice(slashIdx + 1) : afterProtocol);
   }
 
-  // Handle https://storage.googleapis.com/<bucketName>/<objectPath> or https://storage.cloud.google.com/<bucketName>/<objectPath>
-  const gcsHttpRegex = /^https?:\/\/(?:storage\.googleapis\.com|storage\.cloud\.google\.com)\/([^/]+)\/(.+)$/i;
-  const match = cleaned.match(gcsHttpRegex);
-  if (match && match[2]) {
-    return match[2];
+  // Handle path-style: https://storage.googleapis.com/<bucketName>/<objectPath>
+  // or https://storage.cloud.google.com/<bucketName>/<objectPath>
+  const pathStyleRegex = /^https?:\/\/(?:storage\.googleapis\.com|storage\.cloud\.google\.com)\/([^/]+)\/(.+)$/i;
+  const matchPath = cleaned.match(pathStyleRegex);
+  if (matchPath && matchPath[2]) {
+    return decodeURIComponent(matchPath[2]);
   }
 
+  // Handle virtual-hosted style: https://<bucketName>.storage.googleapis.com/<objectPath>
+  const virtualHostRegex = /^https?:\/\/([^.]+)\.storage\.googleapis\.com\/(.+)$/i;
+  const matchVirtual = cleaned.match(virtualHostRegex);
+  if (matchVirtual && matchVirtual[2]) {
+    return decodeURIComponent(matchVirtual[2]);
+  }
+
+  // Handle explicit bucket prefix: <bucketName>/<objectPath>
   if (bucketName && cleaned.startsWith(`${bucketName}/`)) {
-    return cleaned.slice(`${bucketName}/`.length);
+    return decodeURIComponent(cleaned.slice(`${bucketName}/`.length));
   }
+
   return cleaned;
 }
 
@@ -124,6 +144,7 @@ export async function resolveImageUrl(
 
   const bucketName = process.env.GCS_BUCKET_NAME || "";
   const normalizedKey = normalizeObjectPath(trimmed, bucketName);
+  if (!normalizedKey) return null;
 
   // If normalizedKey is a non-GCS external URL or local static asset, return directly
   if (
@@ -163,9 +184,9 @@ export async function resolveImageUrl(
       reference: trimmed,
     };
   } catch (err: any) {
-    // Graceful fallback for local development or offline test environments
+    // Graceful fallback: return clean normalized key (never an expired signed URL)
     return {
-      url: trimmed,
+      url: normalizedKey,
       expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
       reference: trimmed,
     };
@@ -211,6 +232,36 @@ export async function resolveCatalogImages<
     imageUrl: parentUrl,
     imageReference: product.imageUrl ?? null,
     ...(resolvedVariants !== undefined ? { variants: resolvedVariants } : {}),
+  };
+}
+
+/**
+ * Centralized resolver for a single product variant and its optional parent product.
+ */
+export async function resolveVariantImages<
+  T extends {
+    imageUrl?: string | null;
+    product?: { imageUrl?: string | null } | null;
+  }
+>(variant: T): Promise<T & { imageReference: string | null }> {
+  const rawVariantRef = variant.imageUrl || variant.product?.imageUrl || null;
+  const vResolved = await resolveImageUrl(rawVariantRef);
+
+  let resolvedProduct = variant.product;
+  if (variant.product) {
+    const pResolved = await resolveImageUrl(variant.product.imageUrl);
+    resolvedProduct = {
+      ...variant.product,
+      imageUrl: pResolved?.url ?? variant.product.imageUrl ?? null,
+      imageReference: variant.product.imageUrl ?? null,
+    } as any;
+  }
+
+  return {
+    ...variant,
+    imageUrl: vResolved?.url ?? rawVariantRef ?? null,
+    imageReference: rawVariantRef ?? null,
+    ...(resolvedProduct !== undefined ? { product: resolvedProduct } : {}),
   };
 }
 
