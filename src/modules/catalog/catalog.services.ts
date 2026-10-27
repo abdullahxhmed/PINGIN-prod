@@ -1,29 +1,41 @@
 import { ComponentType, ProductType } from "@prisma/client";
 import { NotFoundError } from "../../errors/AppError.js";
 import { prisma } from "../../lib/prisma.js";
+import { getCommittedDemandBySku } from "../inventory/inventory.services.js";
 import { resolveCatalogImages, resolveImageUrl, resolveVariantImages } from "./catalog-images.service.js";
 
 async function getInventoryStockMap(): Promise<{
   serializedStock: Map<string, number>;
   physicalStock: Map<string, number>;
 }> {
-  const serializedCounts = await prisma.$queryRaw<Array<{ sku: string; count: bigint }>>`
-    SELECT qi.sku, COUNT(q.id) as count
-    FROM "QrTag" q
-    JOIN "QrTagInventory" qi ON qi."qrTagId" = q.id
-    WHERE q.status = 'UNASSIGNED'
-      AND q.origin = 'PREPRINTED_INVENTORY'
-      AND qi.state = 'IN_STOCK'
-      AND qi."activeReservationId" IS NULL
-    GROUP BY qi.sku;
-  `;
+  const [serializedCounts, committedDemandMap, physicalItems] = await Promise.all([
+    prisma.$queryRaw<Array<{ sku: string; count: bigint }>>`
+      SELECT qi.sku, COUNT(q.id) as count
+      FROM "QrTag" q
+      JOIN "QrTagInventory" qi ON qi."qrTagId" = q.id
+      WHERE q.status = 'UNASSIGNED'
+        AND q.origin = 'PREPRINTED_INVENTORY'
+        AND qi.state = 'IN_STOCK'
+      GROUP BY qi.sku;
+    `,
+    getCommittedDemandBySku(),
+    prisma.inventoryStock.findMany(),
+  ]);
 
   const serializedStock = new Map<string, number>();
   for (const row of serializedCounts) {
-    serializedStock.set(row.sku, Number(row.count));
+    const physical = Number(row.count);
+    const demand = committedDemandMap.get(row.sku)?.totalCommittedDemand || 0;
+    const sellable = Math.max(0, physical - demand);
+    serializedStock.set(row.sku, sellable);
   }
 
-  const physicalItems = await prisma.inventoryStock.findMany();
+  for (const [sku] of committedDemandMap.entries()) {
+    if (!serializedStock.has(sku)) {
+      serializedStock.set(sku, 0);
+    }
+  }
+
   const physicalStock = new Map<string, number>();
   for (const item of physicalItems) {
     const available = Math.max(0, item.quantityOnHand - item.reservedCount);

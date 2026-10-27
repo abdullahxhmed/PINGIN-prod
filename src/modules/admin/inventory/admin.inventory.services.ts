@@ -103,18 +103,29 @@ export interface ReceivePrintBatchInput {
   receivedBy?: string | undefined;
 }
 
+import { getCommittedDemandBySku } from "../../inventory/inventory.services.js";
+
 // ---------------------------------------------------------------------------
 // 1. Inventory Summary (Serialized & Bulk)
 // ---------------------------------------------------------------------------
 
 export const adminGetInventorySummary = async () => {
-  // Aggregate QrTagInventory by SKU and state
-  const serializedBySkuAndState = await prisma.qrTagInventory.groupBy({
-    by: ["sku", "state"],
-    _count: { id: true },
-  });
+  // Aggregate QrTagInventory by SKU and state, fetch committed demand, bulk stock, and tag counts in parallel
+  const [serializedBySkuAndState, committedDemandMap, bulkStock, totalQrTags, totalAssignedOperational] =
+    await Promise.all([
+      prisma.qrTagInventory.groupBy({
+        by: ["sku", "state"],
+        _count: { id: true },
+      }),
+      getCommittedDemandBySku(),
+      prisma.inventoryStock.findMany({
+        orderBy: { sku: "asc" },
+      }),
+      prisma.qrTag.count(),
+      prisma.qrTag.count({ where: { status: QrTagStatus.ASSIGNED } }),
+    ]);
 
-  // Calculate summary map: sku -> { generated, sentToPrint, inStock, reserved, allocated, delivered, damaged, total }
+  // Calculate summary map: sku -> { generated, sentToPrint, inStock, physicalStock, committedDemand, paidUnfulfilledDemand, activeReservationsDemand, sellableStock, reserved, allocated, delivered, damaged, total }
   const skuMap: Record<
     string,
     {
@@ -122,6 +133,11 @@ export const adminGetInventorySummary = async () => {
       generated: number;
       sentToPrint: number;
       inStock: number;
+      physicalStock: number;
+      committedDemand: number;
+      paidUnfulfilledDemand: number;
+      activeReservationsDemand: number;
+      sellableStock: number;
       reserved: number;
       allocated: number;
       delivered: number;
@@ -130,20 +146,37 @@ export const adminGetInventorySummary = async () => {
     }
   > = {};
 
+  // Initialize for all SKUs present in inventory or demand
+  const allSkus = new Set<string>([
+    ...serializedBySkuAndState.map((r) => r.sku),
+    ...committedDemandMap.keys(),
+  ]);
+
+  for (const sku of allSkus) {
+    const demand = committedDemandMap.get(sku);
+    const paidUnfulfilled = demand?.paidUnfulfilledDemand || 0;
+    const activeRes = demand?.activeReservationsDemand || 0;
+    const totalCommitted = demand?.totalCommittedDemand || 0;
+
+    skuMap[sku] = {
+      sku,
+      generated: 0,
+      sentToPrint: 0,
+      inStock: 0,
+      physicalStock: 0,
+      committedDemand: totalCommitted,
+      paidUnfulfilledDemand: paidUnfulfilled,
+      activeReservationsDemand: activeRes,
+      sellableStock: 0,
+      reserved: activeRes,
+      allocated: 0,
+      delivered: 0,
+      damaged: 0,
+      total: 0,
+    };
+  }
+
   for (const row of serializedBySkuAndState) {
-    if (!skuMap[row.sku]) {
-      skuMap[row.sku] = {
-        sku: row.sku,
-        generated: 0,
-        sentToPrint: 0,
-        inStock: 0,
-        reserved: 0,
-        allocated: 0,
-        delivered: 0,
-        damaged: 0,
-        total: 0,
-      };
-    }
     const count = row._count.id;
     skuMap[row.sku]!.total += count;
 
@@ -157,18 +190,16 @@ export const adminGetInventorySummary = async () => {
     else if (row.state === QrTagStockState.DAMAGED) skuMap[row.sku]!.damaged += count;
   }
 
-  // Bulk physical items from InventoryStock
-  const bulkStock = await prisma.inventoryStock.findMany({
-    orderBy: { sku: "asc" },
-  });
+  // Calculate sellable stock: max(0, physical in stock - committed demand)
+  for (const item of Object.values(skuMap)) {
+    item.physicalStock = item.inStock;
+    item.sellableStock = Math.max(0, item.inStock - item.committedDemand);
+  }
 
-  const [totalQrTags, totalAssignedOperational] = await prisma.$transaction([
-    prisma.qrTag.count(),
-    prisma.qrTag.count({ where: { status: QrTagStatus.ASSIGNED } }),
-  ]);
+  const skuList = Object.values(skuMap);
 
   return {
-    serializedBySku: Object.values(skuMap),
+    serializedBySku: skuList,
     bulkStock: bulkStock.map((b) => ({
       ...b,
       availableCount: b.quantityOnHand - b.reservedCount,
@@ -177,8 +208,12 @@ export const adminGetInventorySummary = async () => {
     totals: {
       totalPhysicalTags: totalQrTags,
       assignedToVehicles: totalAssignedOperational,
-      inCommerceStock: Object.values(skuMap).reduce((acc, s) => acc + s.inStock, 0),
-      reservedInCheckout: Object.values(skuMap).reduce((acc, s) => acc + s.reserved, 0),
+      inCommerceStock: skuList.reduce((acc, s) => acc + s.inStock, 0),
+      physicalStock: skuList.reduce((acc, s) => acc + s.inStock, 0),
+      totalCommittedDemand: skuList.reduce((acc, s) => acc + s.committedDemand, 0),
+      paidUnfulfilledDemand: skuList.reduce((acc, s) => acc + s.paidUnfulfilledDemand, 0),
+      reservedInCheckout: skuList.reduce((acc, s) => acc + s.activeReservationsDemand, 0),
+      totalSellableStock: skuList.reduce((acc, s) => acc + s.sellableStock, 0),
     },
   };
 };

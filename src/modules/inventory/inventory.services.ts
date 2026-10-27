@@ -1,15 +1,180 @@
-import { ComponentType, QrTagStockState, ReservationStatus } from "@prisma/client";
+import { ComponentType, OrderStatus, Prisma, QrTagStockState, ReservationStatus } from "@prisma/client";
 import { BadRequestError, NotFoundError } from "../../errors/AppError.js";
 import { prisma } from "../../lib/prisma.js";
 import type {
   AvailabilityResult,
   CartItemInput,
   CreateReservationInput,
+  SkuDemandBreakdown,
 } from "./inventory.types.js";
 import {
   MAX_RESERVATION_QUANTITY,
   RESERVATION_TTL_MINUTES,
 } from "./inventory.types.js";
+
+/**
+ * Computes live committed demand for serialized QR tag SKUs.
+ *
+ * Committed Demand consists of:
+ * 1. Paid, unfulfilled orders: status IN ('PAID', 'PACKING')
+ *    Calculated per order as: max(0, requiredForSku - alreadyAllocatedForSku)
+ *    Explicitly accounts for cancellations/refunds (status NOT IN ('CANCELLED', 'REFUNDED', 'PAYMENT_PENDING')).
+ * 2. Active checkout reservations: status = 'ACTIVE' AND expiresAt > NOW()
+ *    (Optionally excluding the current checkout session if re-reserving).
+ *
+ * Formula:
+ * Sellable = max(0, Physical in stock - Committed demand)
+ */
+export const getCommittedDemandBySku = async (options?: {
+  excludeCheckoutSessionId?: string | undefined;
+  targetSkus?: string[] | undefined;
+  tx?: Prisma.TransactionClient | undefined;
+}): Promise<Map<string, SkuDemandBreakdown>> => {
+  const db = options?.tx || prisma;
+  const now = new Date();
+
+  // 1. Paid, unfulfilled orders: status IN ('PAID', 'PACKING')
+  const paidOrders = await db.order.findMany({
+    where: {
+      status: { in: [OrderStatus.PAID, OrderStatus.PACKING] },
+    },
+    select: {
+      id: true,
+      orderNumber: true,
+      status: true,
+      items: {
+        select: {
+          id: true,
+          quantity: true,
+          productSnapshot: true,
+          variant: {
+            select: {
+              components: {
+                where: { componentType: ComponentType.SERIALIZED_QR_TAG },
+                select: { inventorySku: true, quantity: true },
+              },
+            },
+          },
+        },
+      },
+      tagAllocations: {
+        select: {
+          qrTag: {
+            select: {
+              inventory: { select: { sku: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const paidDemandMap = new Map<string, number>();
+
+  for (const order of paidOrders) {
+    const orderNeededPerSku = new Map<string, number>();
+
+    for (const item of order.items) {
+      const snap = item.productSnapshot as any;
+      const comps = snap?.components || item.variant?.components || [];
+      for (const comp of comps) {
+        if (
+          (comp.componentType === ComponentType.SERIALIZED_QR_TAG ||
+            comp.componentType === "SERIALIZED_QR_TAG") &&
+          comp.inventorySku
+        ) {
+          const qty = (comp.quantity || 1) * item.quantity;
+          orderNeededPerSku.set(
+            comp.inventorySku,
+            (orderNeededPerSku.get(comp.inventorySku) || 0) + qty
+          );
+        }
+      }
+    }
+
+    const orderAllocatedPerSku = new Map<string, number>();
+    for (const alloc of order.tagAllocations) {
+      const sku = alloc.qrTag?.inventory?.sku;
+      if (sku) {
+        orderAllocatedPerSku.set(sku, (orderAllocatedPerSku.get(sku) || 0) + 1);
+      }
+    }
+
+    for (const [sku, needed] of orderNeededPerSku.entries()) {
+      const alreadyAllocated = orderAllocatedPerSku.get(sku) || 0;
+      const unfulfilled = Math.max(0, needed - alreadyAllocated);
+      if (unfulfilled > 0) {
+        paidDemandMap.set(sku, (paidDemandMap.get(sku) || 0) + unfulfilled);
+      }
+    }
+  }
+
+  // 2. Active checkout reservations: status = 'ACTIVE' AND expiresAt > now
+  const activeReservationsWhere: Prisma.InventoryReservationWhereInput = {
+    status: ReservationStatus.ACTIVE,
+    expiresAt: { gt: now },
+  };
+
+  if (options?.excludeCheckoutSessionId) {
+    activeReservationsWhere.checkoutSessionId = { not: options.excludeCheckoutSessionId };
+  }
+
+  const activeReservations = await db.inventoryReservation.findMany({
+    where: activeReservationsWhere,
+    select: {
+      id: true,
+      items: {
+        select: {
+          quantity: true,
+          variant: {
+            select: {
+              components: {
+                where: { componentType: ComponentType.SERIALIZED_QR_TAG },
+                select: { inventorySku: true, quantity: true },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const reservationDemandMap = new Map<string, number>();
+  for (const res of activeReservations) {
+    for (const item of res.items) {
+      for (const comp of item.variant.components) {
+        if (comp.inventorySku) {
+          const qty = comp.quantity * item.quantity;
+          reservationDemandMap.set(
+            comp.inventorySku,
+            (reservationDemandMap.get(comp.inventorySku) || 0) + qty
+          );
+        }
+      }
+    }
+  }
+
+  // Combine into unified demand map
+  const allSkus = new Set<string>([
+    ...paidDemandMap.keys(),
+    ...reservationDemandMap.keys(),
+    ...(options?.targetSkus || []),
+  ]);
+
+  const result = new Map<string, SkuDemandBreakdown>();
+  for (const sku of allSkus) {
+    const paidUnfulfilled = paidDemandMap.get(sku) || 0;
+    const activeRes = reservationDemandMap.get(sku) || 0;
+    result.set(sku, {
+      sku,
+      paidUnfulfilledDemand: paidUnfulfilled,
+      activeReservationsDemand: activeRes,
+      totalCommittedDemand: paidUnfulfilled + activeRes,
+    });
+  }
+
+  return result;
+};
 
 export const checkBundleAvailability = async (
   variantId: string,
@@ -54,7 +219,12 @@ export const checkBundleAvailability = async (
     }
   }
 
-  // Check each serialized SKU availability from QrTagInventory
+  // Fetch committed demand for the required serialized SKUs
+  const demandMap = await getCommittedDemandBySku({
+    targetSkus: [...serializedSkuNeeds.keys()],
+  });
+
+  // Check each serialized SKU sellable availability: max(0, physical - committed)
   for (const [sku, needed] of serializedSkuNeeds.entries()) {
     const availableResult = await prisma.$queryRaw<Array<{ count: bigint }>>`
       SELECT COUNT(q.id) as count
@@ -63,13 +233,17 @@ export const checkBundleAvailability = async (
       WHERE q.status = 'UNASSIGNED'
         AND q.origin = 'PREPRINTED_INVENTORY'
         AND qi.sku = ${sku}
-        AND qi.state = 'IN_STOCK'
-        AND qi."activeReservationId" IS NULL;
+        AND qi.state = 'IN_STOCK';
     `;
-    const available = Number(availableResult[0]?.count ?? 0);
-    totalAvailableTags += available;
-    if (available < needed) {
-      shortages.push(`QR Tag SKU ${sku}: required ${needed}, available ${available}`);
+    const physical = Number(availableResult[0]?.count ?? 0);
+    const committed = demandMap.get(sku)?.totalCommittedDemand || 0;
+    const sellable = Math.max(0, physical - committed);
+
+    totalAvailableTags += sellable;
+    if (sellable < needed) {
+      shortages.push(
+        `QR Tag SKU ${sku}: required ${needed}, sellable ${sellable} (physical in stock: ${physical}, committed: ${committed})`
+      );
     }
   }
 
@@ -191,27 +365,41 @@ export const createAtomicReservation = async (input: CreateReservationInput) => 
       }
     }
 
-    // 4. Verify serialized tag SKU quantities are available in warehouse pool
+    // 4. Atomically verify serialized tag SKU quantities are available in warehouse pool
     const sortedSerializedSkus = [...serializedRequirements.entries()].sort(([a], [b]) =>
       a.localeCompare(b)
     );
 
+    // Acquire PostgreSQL transaction-level advisory locks in deterministic alphabetical order
+    // to strictly serialize concurrent checkout attempts on the same physical SKU pool
+    for (const [sku] of sortedSerializedSkus) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${sku}))`;
+    }
+
+    // With atomic locks held, calculate committed demand (excluding current session if re-reserving)
+    const demandMap = await getCommittedDemandBySku({
+      tx,
+      excludeCheckoutSessionId: checkoutSessionId,
+      targetSkus: sortedSerializedSkus.map(([sku]) => sku),
+    });
+
     for (const [sku, totalNeededForSku] of sortedSerializedSkus) {
-      const availableResult = await tx.$queryRaw<Array<{ count: bigint }>>`
+      const physicalResult = await tx.$queryRaw<Array<{ count: bigint }>>`
         SELECT COUNT(q.id) as count
         FROM "QrTag" q
         JOIN "QrTagInventory" qi ON qi."qrTagId" = q.id
         WHERE q.status = 'UNASSIGNED'
           AND q.origin = 'PREPRINTED_INVENTORY'
           AND qi.sku = ${sku}
-          AND qi.state = 'IN_STOCK'
-          AND qi."activeReservationId" IS NULL;
+          AND qi.state = 'IN_STOCK';
       `;
-      const available = Number(availableResult[0]?.count ?? 0);
+      const physical = Number(physicalResult[0]?.count ?? 0);
+      const committed = demandMap.get(sku)?.totalCommittedDemand || 0;
+      const sellable = Math.max(0, physical - committed);
 
-      if (available < totalNeededForSku) {
+      if (sellable < totalNeededForSku) {
         throw new BadRequestError(
-          `Insufficient QR tag stock for SKU ${sku}. Required: ${totalNeededForSku}, Available: ${available}`
+          `Insufficient QR tag stock for SKU ${sku}. Required: ${totalNeededForSku}, Sellable: ${sellable} (Physical in stock: ${physical}, Committed demand: ${committed})`
         );
       }
     }

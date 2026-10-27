@@ -434,9 +434,9 @@ export const pairQrTag = async ({
       },
     });
 
-    // Step 5: Subscription is account-level. Check if this account has an unredeemed PLUS grant
-    // created at/before pairing. The pairing can trigger redemption regardless of where tag came from.
-    const pendingGrant = await tx.subscriptionGrant.findFirst({
+    // Step 5: Subscription is account-level. Check if this account has an unredeemed PLUS grant.
+    // 1. First check if the user already has a grant linked to their userId
+    let grantToRedeem = await tx.subscriptionGrant.findFirst({
       where: {
         userId,
         status: GrantStatus.PENDING_PAIRING,
@@ -445,12 +445,83 @@ export const pairQrTag = async ({
       orderBy: { createdAt: "asc" },
     });
 
+    // 2. Fallback: Tag was allocated to an order that has an unredeemed grant (e.g. Guest checkout)
+    if (!grantToRedeem) {
+      const allocation = await tx.orderTagAllocation.findFirst({
+        where: { qrTagId: tag.id },
+        include: {
+          order: {
+            include: {
+              subscriptionGrants: {
+                where: {
+                  status: { in: [GrantStatus.PENDING_CLAIM, GrantStatus.PENDING_PAIRING] },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      const orderGrant = allocation?.order?.subscriptionGrants?.[0];
+      if (orderGrant) {
+        if (!allocation.order.userId) {
+          await tx.order.update({
+            where: { id: allocation.order.id },
+            data: { userId },
+          });
+        }
+        grantToRedeem = orderGrant;
+      }
+    }
+
+    // 3. Fallback: Any paid order with customerPhone matching user's phone that has an unredeemed grant
+    if (!grantToRedeem) {
+      const userRecord = await tx.user.findUnique({
+        where: { id: userId },
+        select: { mobileNumber: true },
+      });
+      if (userRecord?.mobileNumber) {
+        const matchingOrder = await tx.order.findFirst({
+          where: {
+            customerPhone: userRecord.mobileNumber,
+            subscriptionGrants: {
+              some: {
+                status: { in: [GrantStatus.PENDING_CLAIM, GrantStatus.PENDING_PAIRING] },
+              },
+            },
+          },
+          include: {
+            subscriptionGrants: {
+              where: {
+                status: { in: [GrantStatus.PENDING_CLAIM, GrantStatus.PENDING_PAIRING] },
+              },
+            },
+          },
+        });
+
+        const phoneGrant = matchingOrder?.subscriptionGrants?.[0];
+        if (phoneGrant) {
+          if (!matchingOrder.userId) {
+            await tx.order.update({
+              where: { id: matchingOrder.id },
+              data: { userId },
+            });
+          }
+          grantToRedeem = phoneGrant;
+        }
+      }
+    }
+
     let activatedPlus = false;
     let plusDurationMonths = 0;
-    if (pendingGrant) {
+    if (grantToRedeem) {
       const redeemed = await tx.subscriptionGrant.updateMany({
-        where: { id: pendingGrant.id, userId, status: GrantStatus.PENDING_PAIRING },
+        where: {
+          id: grantToRedeem.id,
+          status: { in: [GrantStatus.PENDING_PAIRING, GrantStatus.PENDING_CLAIM] },
+        },
         data: {
+          userId,
           status: GrantStatus.ACTIVATED,
           activatedAt: now,
           triggeringQrTagId: tag.id,
@@ -458,9 +529,9 @@ export const pairQrTag = async ({
       });
 
       if (redeemed.count === 1) {
-        await activateUserPlusSubscription(tx, userId, pendingGrant.plusDurationMonths);
+        await activateUserPlusSubscription(tx, userId, grantToRedeem.plusDurationMonths);
         activatedPlus = true;
-        plusDurationMonths = pendingGrant.plusDurationMonths;
+        plusDurationMonths = grantToRedeem.plusDurationMonths;
       }
     }
 

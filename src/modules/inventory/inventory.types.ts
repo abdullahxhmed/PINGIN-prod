@@ -39,3 +39,10 @@ export interface ReservationSummary {
   totalAmount: number;
   userId?: string | null;
 }
+
+export interface SkuDemandBreakdown {
+  sku: string;
+  paidUnfulfilledDemand: number;
+  activeReservationsDemand: number;
+  totalCommittedDemand: number;
+}
