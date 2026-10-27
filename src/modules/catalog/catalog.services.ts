@@ -465,17 +465,17 @@ export const seedDefaultCatalog = async () => {
     update: {},
     create: {
       sku: "PK-PLUS-RENEWAL",
-      name: "12-Month Plus Service Renewal",
+      name: "12 Month Plus",
       slug: "plus-plan-renewal",
       description: "Digital subscription renewal granting 12 additional months of Plus plan service benefits. 0 physical goods.",
       type: ProductType.SUBSCRIPTION_ONLY,
-      basePrice: 19900, // ₹199
+      basePrice: 9900, // ₹99
       weightGrams: 0,
       variants: {
         create: {
           sku: "PK-VAR-RENEWAL-12M",
           name: "12 Months Plus Service",
-          price: 19900,
+          price: 9900,
           components: {
             create: [
               {

@@ -1,6 +1,10 @@
 import { WebhookProcessingStatus } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
 import { reconcileCapturedPayment, reconcileFailedPayment } from "../orders/orders.services.js";
+import {
+  reconcileCapturedSubscriptionPayment,
+  reconcileFailedSubscriptionPayment,
+} from "../subscriptions/subscriptions.services.js";
 
 /**
  * Claims and processes a specific WebhookInbox event with safe state transitions and retry backoff.
@@ -38,23 +42,65 @@ export const processWebhookInboxRecord = async (inboxId: string): Promise<void> 
         throw new Error("Malformed payment.entity: missing order_id, payment id, or amount");
       }
 
-      await reconcileCapturedPayment({
-        providerOrderId,
-        providerPaymentId,
-        amount,
-        currency,
-        rawPayload: payload,
+      // Check whether this payment belongs to an e-commerce order or an in-app subscription purchase
+      const matchingOrder = await prisma.order.findUnique({
+        where: { razorpayOrderId: providerOrderId },
+        select: { id: true },
       });
+
+      if (matchingOrder) {
+        await reconcileCapturedPayment({
+          providerOrderId,
+          providerPaymentId,
+          amount,
+          currency,
+          rawPayload: payload,
+        });
+      } else {
+        const matchingSubPurchase = await prisma.subscriptionPurchase.findFirst({
+          where: { providerOrderId },
+          select: { id: true },
+        });
+
+        if (matchingSubPurchase) {
+          await reconcileCapturedSubscriptionPayment({
+            providerOrderId,
+            providerPaymentId,
+            amount,
+            currency,
+            rawPayload: payload,
+          });
+        } else {
+          throw new Error(
+            `No local order or subscription purchase found matching Razorpay Order ID ${providerOrderId}`
+          );
+        }
+      }
     } else if (eventType === "payment.failed") {
       const paymentEntity = payload?.payload?.payment?.entity;
       if (paymentEntity?.order_id) {
-        await reconcileFailedPayment({
-          providerOrderId: paymentEntity.order_id,
-          providerPaymentId: paymentEntity.id,
-          failureCode: paymentEntity.error_code,
-          failureDescription: paymentEntity.error_description,
-          rawPayload: payload,
+        const matchingOrder = await prisma.order.findUnique({
+          where: { razorpayOrderId: paymentEntity.order_id },
+          select: { id: true },
         });
+
+        if (matchingOrder) {
+          await reconcileFailedPayment({
+            providerOrderId: paymentEntity.order_id,
+            providerPaymentId: paymentEntity.id,
+            failureCode: paymentEntity.error_code,
+            failureDescription: paymentEntity.error_description,
+            rawPayload: payload,
+          });
+        } else {
+          await reconcileFailedSubscriptionPayment({
+            providerOrderId: paymentEntity.order_id,
+            providerPaymentId: paymentEntity.id,
+            failureCode: paymentEntity.error_code,
+            failureDescription: paymentEntity.error_description,
+            rawPayload: payload,
+          });
+        }
       }
     }
 

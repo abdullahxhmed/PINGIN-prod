@@ -1,4 +1,5 @@
 import { PurchasePackType, SubscriptionTier } from "@prisma/client";
+import { z } from "zod";
 
 export interface PlanConfig {
   tier: SubscriptionTier;
@@ -89,13 +90,13 @@ export const PACK_CATALOG: Record<PurchasePackType, PackDefinition> = {
   },
   [PurchasePackType.PLUS_RENEWAL]: {
     packType: PurchasePackType.PLUS_RENEWAL,
-    name: "12-Month Plus Plan Renewal",
-    amountPaise: 19900, // ₹199
+    name: "12 Month Plus",
+    amountPaise: 9900, // ₹99
     currency: "INR",
     tagsIncluded: 0,
     plusDurationMonths: 12,
-    badge: "Renewal",
-    description: "Renew or extend Plus subscription for an additional 12 months with 0 additional tags.",
+    badge: "Plus Plan",
+    description: "12 months of Plus subscription with 0 additional tags.",
     features: [
       "12 Months Plus subscription extension",
       "Maintains up to 8 active tags simultaneously",
@@ -116,3 +117,34 @@ export const PACK_CATALOG: Record<PurchasePackType, PackDefinition> = {
     features: ["Custom tag allocation", "Enterprise SLA & dedicated support"],
   },
 };
+
+export const CreateSubscriptionPurchaseSchema = z.object({
+  packType: z.enum(
+    [
+      PurchasePackType.PACK_179,
+      PurchasePackType.PACK_499,
+      PurchasePackType.PLUS_RENEWAL,
+      PurchasePackType.CUSTOM,
+    ],
+    {
+      message: "Valid packType is required (PACK_179, PACK_499, PLUS_RENEWAL, CUSTOM)",
+    }
+  ),
+  paymentProvider: z.string().optional().default("RAZORPAY"),
+  metadata: z.record(z.string(), z.any()).optional(),
+});
+
+export type CreateSubscriptionPurchaseInput = z.infer<
+  typeof CreateSubscriptionPurchaseSchema
+>;
+
+export const VerifySubscriptionPaymentSchema = z.object({
+  razorpayOrderId: z.string().trim().min(1, "Razorpay Order ID is required"),
+  razorpayPaymentId: z.string().trim().min(1, "Razorpay Payment ID is required"),
+  razorpaySignature: z.string().trim().min(1, "Razorpay signature is required"),
+  purchaseId: z.string().uuid("Invalid purchaseId format").optional(),
+});
+
+export type VerifySubscriptionPaymentInput = z.infer<
+  typeof VerifySubscriptionPaymentSchema
+>;

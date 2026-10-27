@@ -152,21 +152,11 @@ const refreshAccessTokenController = asyncHandler (async (req,res, next) => {
  * @route GET /api/auth/me
  * @access private
  */
-const getMeController = asyncHandler (async (req, res, next) => {
-    const start = performance.now();
-    console.log("SERVICE START");   
-
-    const dbStart = performance.now();
+const getMeController = asyncHandler(async (req, res) => {
     const userId = req.user.id;
-    console.log("BEFORE SERVICE", performance.now());
-
     const getMe = await getCurrentUser(userId);
-    console.log("AFTER SERVICE", performance.now());
-     console.log("PRISMA:", performance.now() - dbStart);
-
-    console.log("SERVICE TOTAL:", performance.now() - start);
     res.status(200).json(getMe);
-})
+});
 
 
 

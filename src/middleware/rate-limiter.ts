@@ -6,18 +6,21 @@ import redis from "../lib/redis.js";
 
 export function getClientIp(req: Request): string {
   const cfIp = req.headers?.["cf-connecting-ip"];
-  if (typeof cfIp === "string" && cfIp.trim()) return cfIp.trim();
-
-  const forwarded = req.headers?.["x-forwarded-for"];
-  if (typeof forwarded === "string") {
-    const first = forwarded.split(",")[0]?.trim();
-    if (first) return first;
-  } else if (Array.isArray(forwarded) && forwarded[0]) {
-    const first = forwarded[0].split(",")[0]?.trim();
-    if (first) return first;
+  if (typeof cfIp === "string" && cfIp.trim()) {
+    return cfIp.trim().replace(/^::ffff:/, "");
   }
 
-  return req.ip || req.socket?.remoteAddress || "unknown-ip";
+  const forwarded = req.headers?.["x-forwarded-for"];
+  let rawIp = "";
+  if (typeof forwarded === "string") {
+    rawIp = forwarded.split(",")[0]?.trim() || "";
+  } else if (Array.isArray(forwarded) && forwarded[0]) {
+    rawIp = forwarded[0].split(",")[0]?.trim() || "";
+  } else {
+    rawIp = req.ip || req.socket?.remoteAddress || "unknown-ip";
+  }
+
+  return rawIp.replace(/^::ffff:/, "");
 }
 
 export function getClientIdentifier(req: Request): string {
@@ -34,7 +37,6 @@ export function getClientIdentifier(req: Request): string {
       try {
         const payload = jwt.verify(token, process.env.JWT_SECRET) as any;
         if (payload && typeof payload.sub === "string") {
-          // Pre-populate req.user so downstream middleware can also benefit
           if (!req.user) {
             req.user = { id: payload.sub };
           }
@@ -51,8 +53,8 @@ export function getClientIdentifier(req: Request): string {
 }
 
 export const apiRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  limit: 1000,              // 1000 requests per 15 minutes (~66 req/min)
+  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
+  limit: Number(process.env.RATE_LIMIT_MAX) || 1000,                    // 1000 requests per 15 min
 
   standardHeaders: "draft-8",
   legacyHeaders: false,
@@ -65,11 +67,13 @@ export const apiRateLimiter = rateLimit({
   },
 
   skip: (req) => {
-    // Dynamically evaluate env var so runtime changes or late dotenv loading take effect
-    if (process.env.RATE_LIMIT_ENABLED !== "true") return true;
+    const reqUrl = req.originalUrl || req.url || req.path || "";
+
+    // Webhooks authenticate via HMAC signatures; do not throttle external provider callbacks
+    if (reqUrl.startsWith("/api/webhooks")) return true;
 
     // Skip health checks
-    if (req.path === "/health" || req.path === "/api/health") return true;
+    if (reqUrl === "/health" || reqUrl === "/api/health") return true;
 
     // Skip server-to-server or operator requests with valid admin key
     const adminKey = req.headers?.["x-admin-key"];
@@ -79,6 +83,11 @@ export const apiRateLimiter = rateLimit({
       typeof adminKey === "string" &&
       adminKey.trim() === configuredAdminKey
     ) {
+      return true;
+    }
+
+    // In non-production, respect RATE_LIMIT_ENABLED="false"
+    if (process.env.NODE_ENV !== "production" && process.env.RATE_LIMIT_ENABLED === "false") {
       return true;
     }
 
@@ -94,6 +103,7 @@ export const apiRateLimiter = rateLimit({
   }),
 
   message: {
+    status: 429,
     message: "Too many requests. Please try again later.",
   },
 });

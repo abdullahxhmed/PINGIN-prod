@@ -7,8 +7,13 @@ import {
   getUserPurchases,
   getUserSubscription,
   selectActiveTags,
+  verifySubscriptionPayment,
 } from "./subscriptions.services.js";
-import { PACK_CATALOG } from "./subscriptions.types.js";
+import {
+  CreateSubscriptionPurchaseSchema,
+  PACK_CATALOG,
+  VerifySubscriptionPaymentSchema,
+} from "./subscriptions.types.js";
 import { PurchasePackType } from "@prisma/client";
 
 export const getMySubscriptionController = asyncHandler(
@@ -65,10 +70,14 @@ export const createPurchaseController = asyncHandler(
       throw new BadRequestError("User authentication required");
     }
 
-    const { packType, paymentProvider, metadata } = req.body;
-    if (!packType || !Object.values(PurchasePackType).includes(packType)) {
-      throw new BadRequestError("Valid packType is required (PACK_499, PACK_179, PLUS_RENEWAL)");
+    const parsed = CreateSubscriptionPurchaseSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new BadRequestError(
+        parsed.error.issues.map((i) => i.message).join(", ")
+      );
     }
+
+    const { packType, paymentProvider, metadata } = parsed.data;
 
     const result = await createPackPurchase(
       userId,
@@ -79,7 +88,36 @@ export const createPurchaseController = asyncHandler(
 
     res.status(201).json({
       success: true,
-      message: "Purchase initiated successfully.",
+      message: "Payment order initiated successfully.",
+      data: result,
+    });
+  }
+);
+
+/**
+ * Verifies Razorpay cryptographic signature and activates the subscription instantly.
+ * POST /api/subscriptions/verify-payment
+ */
+export const verifySubscriptionPaymentController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const userId = req.user?.id;
+    if (!userId) {
+      throw new BadRequestError("User authentication required");
+    }
+
+    const parsed = VerifySubscriptionPaymentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new BadRequestError(
+        parsed.error.issues.map((i) => i.message).join(", ")
+      );
+    }
+
+    const result = await verifySubscriptionPayment(userId, parsed.data);
+
+    res.status(200).json({
+      success: true,
+      status: "success",
+      message: result.message,
       data: result,
     });
   }

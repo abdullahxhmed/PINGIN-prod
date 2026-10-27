@@ -54,22 +54,26 @@ app.use(
 app.use(cookieParser());
 
 app.use("/api/webhooks", webhookRoutes);
+
+// Global API rate limiter protecting all routes and fallbacks against client request loops
+app.use(apiRateLimiter);
+
 app.use("/api/communication", communicationRoutes);
-app.use("/api/users", apiRateLimiter, userRoutes);
-app.use("/api/resources", apiRateLimiter, authenticateRequest, resourceRoutes);
-app.use("/api/vehicle-details", apiRateLimiter, vehicleRoutes);
-app.use("/api/contact", apiRateLimiter, contactRoutes);
-app.use("/api/auth", apiRateLimiter, authRoutes);
-app.use("/api/qr", apiRateLimiter, qrRoutes);
-app.use("/api/subscriptions", apiRateLimiter, subscriptionRoutes);
-app.use("/api/catalog", apiRateLimiter, catalogRoutes);
-app.use("/api/inventory", apiRateLimiter, inventoryRoutes);
-app.use("/api/orders", apiRateLimiter, orderRoutes);
-app.use("/api/admin", apiRateLimiter, adminRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/resources", authenticateRequest, resourceRoutes);
+app.use("/api/vehicle-details", vehicleRoutes);
+app.use("/api/contact", contactRoutes);
+app.use("/api/auth", authRoutes);
+app.use("/api/qr", qrRoutes);
+app.use("/api/subscriptions", subscriptionRoutes);
+app.use("/api/catalog", catalogRoutes);
+app.use("/api/inventory", inventoryRoutes);
+app.use("/api/orders", orderRoutes);
+app.use("/api/admin", adminRoutes);
 
 // Permanent physical tag scanner redirects (/t/:token and legacy /qr/:token)
-app.get("/t/:token", apiRateLimiter, redirectTagScanController);
-app.get("/qr/:token", apiRateLimiter, redirectTagScanController);
+app.get("/t/:token", redirectTagScanController);
+app.get("/qr/:token", redirectTagScanController);
 
 app.get("/api/health", (_req, res) => {
   res.status(200).json({

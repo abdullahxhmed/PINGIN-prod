@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import {
   Prisma,
   PurchasePackType,
@@ -5,9 +6,14 @@ import {
   QrTagStatus,
   SubscriptionTier,
 } from "@prisma/client";
-import { BadRequestError, NotFoundError } from "../../errors/AppError.js";
+import { BadRequestError, NotFoundError, UnauthorizedError } from "../../errors/AppError.js";
 import { prisma } from "../../lib/prisma.js";
-import { PACK_CATALOG, PLAN_CONFIGS } from "./subscriptions.types.js";
+import { razorpayClient } from "../../integrations/razorpay/razorpay.client.js";
+import {
+  PACK_CATALOG,
+  PLAN_CONFIGS,
+  type VerifySubscriptionPaymentInput,
+} from "./subscriptions.types.js";
 
 /**
  * Returns user's active subscription, automatically creating default BASIC plan if none exists,
@@ -227,12 +233,13 @@ export const selectActiveTags = async (userId: string, activeTagIds: string[]) =
 };
 
 /**
- * Initiates a purchase for a pack using server-side configuration.
+ * Initiates a purchase for a subscription pack using server-side configuration.
+ * Generates a Razorpay Order and returns checkout parameters for in-app payment.
  */
 export const createPackPurchase = async (
   userId: string,
   packType: PurchasePackType,
-  paymentProvider = "MANUAL",
+  paymentProvider = "RAZORPAY",
   metadata?: Prisma.InputJsonValue
 ) => {
   const packDef = PACK_CATALOG[packType];
@@ -240,6 +247,16 @@ export const createPackPurchase = async (
     throw new BadRequestError(`Invalid pack type: ${packType}`);
   }
 
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, name: true, mobileNumber: true },
+  });
+
+  if (!user) {
+    throw new NotFoundError("User not found");
+  }
+
+  // 1. Create a pending purchase record
   const purchase = await prisma.subscriptionPurchase.create({
     data: {
       userId,
@@ -254,10 +271,240 @@ export const createPackPurchase = async (
     },
   });
 
+  let razorpayOrder = null;
+  if (paymentProvider === "RAZORPAY") {
+    // Generate receipt identifier (max 40 chars for Razorpay API)
+    const receipt = `sub_${purchase.id.replace(/-/g, "").slice(0, 32)}`;
+    try {
+      razorpayOrder = await razorpayClient.createOrder({
+        amount: packDef.amountPaise,
+        currency: packDef.currency,
+        receipt,
+        notes: {
+          purchaseId: purchase.id,
+          userId,
+          packType,
+          purpose: "IN_APP_SUBSCRIPTION_PURCHASE",
+        },
+      });
+
+      // Update purchase record with providerOrderId
+      await prisma.subscriptionPurchase.update({
+        where: { id: purchase.id },
+        data: {
+          providerOrderId: razorpayOrder.id,
+        },
+      });
+    } catch (err: any) {
+      throw new BadRequestError(`Failed to initiate payment gateway: ${err.message}`);
+    }
+  }
+
   return {
     purchase,
     pack: packDef,
+    purchaseId: purchase.id,
+    packType: packDef.packType,
+    amount: packDef.amountPaise,
+    currency: packDef.currency,
+    razorpayOrderId: razorpayOrder ? razorpayOrder.id : null,
+    keyId: razorpayOrder ? razorpayClient.getKeyId() : null,
+    prefill: {
+      name: user.name,
+      contact: user.mobileNumber,
+    },
   };
+};
+
+/**
+ * Direct cryptographic verification of Razorpay payment signature for subscription purchases.
+ * Transitions SubscriptionPurchase to COMPLETED and activates Plus plan immediately.
+ */
+export const verifySubscriptionPayment = async (
+  userId: string,
+  input: VerifySubscriptionPaymentInput
+) => {
+  const { razorpayOrderId, razorpayPaymentId, razorpaySignature, purchaseId } = input;
+
+  // 1. Resolve local purchase record
+  const purchase = await prisma.subscriptionPurchase.findFirst({
+    where: purchaseId
+      ? { id: purchaseId, userId }
+      : { providerOrderId: razorpayOrderId, userId },
+  });
+
+  if (!purchase) {
+    throw new NotFoundError(
+      `No subscription purchase record found matching Order ID '${razorpayOrderId}'`
+    );
+  }
+
+  // 2. Cryptographic signature verification using RAZORPAY_KEY_SECRET
+  const secret = process.env.RAZORPAY_KEY_SECRET;
+  if (!secret) {
+    if (
+      process.env.NODE_ENV === "test" ||
+      process.env.RAZORPAY_MOCK === "true" ||
+      razorpayClient.isMockMode()
+    ) {
+      if (
+        razorpaySignature !== "test_mock_signature" &&
+        razorpaySignature.length === 0
+      ) {
+        throw new UnauthorizedError("Invalid payment signature");
+      }
+    } else {
+      throw new Error("Razorpay secret not configured on server (RAZORPAY_KEY_SECRET)");
+    }
+  } else {
+    const expectedSignature = crypto
+      .createHmac("sha256", secret)
+      .update(`${razorpayOrderId}|${razorpayPaymentId}`)
+      .digest("hex");
+
+    const expectedBuffer = Buffer.from(expectedSignature, "utf8");
+    const signatureBuffer = Buffer.from(razorpaySignature.trim(), "utf8");
+
+    if (
+      expectedBuffer.length !== signatureBuffer.length ||
+      !crypto.timingSafeEqual(expectedBuffer, signatureBuffer)
+    ) {
+      throw new UnauthorizedError("Invalid payment signature");
+    }
+  }
+
+  // 3. Idempotent check: already completed?
+  if (purchase.status === PurchaseStatus.COMPLETED) {
+    const activeSub = await getUserSubscription(userId);
+    return {
+      message: "Subscription purchase already activated.",
+      purchase,
+      subscription: activeSub.subscription,
+    };
+  }
+
+  // 4. Activate in an atomic transaction
+  const now = new Date();
+  const packDef = PACK_CATALOG[purchase.packType];
+  const durationMonths = purchase.plusDurationMonths || packDef?.plusDurationMonths || 12;
+
+  const result = await prisma.$transaction(async (tx) => {
+    const updatedPurchase = await tx.subscriptionPurchase.update({
+      where: { id: purchase.id },
+      data: {
+        status: PurchaseStatus.COMPLETED,
+        paymentProvider: "RAZORPAY",
+        providerOrderId: razorpayOrderId,
+        providerPaymentId: razorpayPaymentId,
+        completedAt: now,
+      },
+    });
+
+    const updatedSub = await activateUserPlusSubscription(tx, userId, durationMonths);
+
+    return { purchase: updatedPurchase, subscription: updatedSub };
+  });
+
+  return {
+    message: `Payment verified successfully! Plus plan activated for ${durationMonths} months.`,
+    purchase: result.purchase,
+    subscription: result.subscription,
+  };
+};
+
+/**
+ * Idempotently reconciles a payment.captured webhook event for subscription purchases.
+ */
+export const reconcileCapturedSubscriptionPayment = async (input: {
+  providerOrderId: string;
+  providerPaymentId: string;
+  amount: number;
+  currency?: string;
+  rawPayload?: any;
+}): Promise<void> => {
+  const { providerOrderId, providerPaymentId, amount, currency = "INR", rawPayload } = input;
+
+  const purchase = await prisma.subscriptionPurchase.findFirst({
+    where: { providerOrderId },
+  });
+
+  if (!purchase) {
+    throw new NotFoundError(
+      `No subscription purchase record found matching Razorpay Order ID ${providerOrderId}`
+    );
+  }
+
+  if (amount !== purchase.amountPaise) {
+    throw new Error(
+      `Payment amount mismatch for purchase ${purchase.id}: expected ${purchase.amountPaise}, received ${amount}`
+    );
+  }
+
+  if (currency !== purchase.currency) {
+    throw new Error(
+      `Payment currency mismatch for purchase ${purchase.id}: expected ${purchase.currency}, received ${currency}`
+    );
+  }
+
+  // Idempotency: If already completed, nothing to do
+  if (purchase.status === PurchaseStatus.COMPLETED) {
+    return;
+  }
+
+  const now = new Date();
+  const packDef = PACK_CATALOG[purchase.packType];
+  const durationMonths = purchase.plusDurationMonths || packDef?.plusDurationMonths || 12;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.subscriptionPurchase.update({
+      where: { id: purchase.id },
+      data: {
+        status: PurchaseStatus.COMPLETED,
+        providerPaymentId,
+        completedAt: now,
+        metadata: rawPayload
+          ? (rawPayload as Prisma.InputJsonValue)
+          : purchase.metadata ?? Prisma.JsonNull,
+      },
+    });
+
+    await activateUserPlusSubscription(tx, purchase.userId, durationMonths);
+  });
+};
+
+/**
+ * Reconciles a payment.failed webhook event for subscription purchases.
+ */
+export const reconcileFailedSubscriptionPayment = async (input: {
+  providerOrderId: string;
+  providerPaymentId?: string;
+  failureCode?: string;
+  failureDescription?: string;
+  rawPayload?: any;
+}): Promise<void> => {
+  const { providerOrderId, providerPaymentId, failureCode, failureDescription } = input;
+
+  const purchase = await prisma.subscriptionPurchase.findFirst({
+    where: { providerOrderId },
+  });
+
+  if (!purchase || purchase.status === PurchaseStatus.COMPLETED) {
+    return;
+  }
+
+  await prisma.subscriptionPurchase.update({
+    where: { id: purchase.id },
+    data: {
+      status: PurchaseStatus.FAILED,
+      providerPaymentId: providerPaymentId ?? purchase.providerPaymentId,
+      metadata: {
+        ...((purchase.metadata as any) || {}),
+        failureCode,
+        failureDescription,
+        failedAt: new Date().toISOString(),
+      },
+    },
+  });
 };
 
 /**

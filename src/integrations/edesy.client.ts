@@ -32,8 +32,17 @@ export class EdesyClient {
 
   async initiateCall(
     partyA: string,
-    partyB: string
+    partyB: string,
+    reference?: string
   ): Promise<EdesyInitiateCallResponse> {
+    const payload: Record<string, any> = {
+      party_a: partyA,
+      party_b: partyB,
+    };
+    if (reference) {
+      payload.reference = reference;
+    }
+
     const response = await fetch(
       `${this.baseUrl}/v1/masking/calls`,
       {
@@ -42,10 +51,7 @@ export class EdesyClient {
           Authorization: `Bearer ${this.apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          party_a: partyA,
-          party_b: partyB,
-        }),
+        body: JSON.stringify(payload),
       }
     );
 

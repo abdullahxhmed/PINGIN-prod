@@ -56,19 +56,27 @@ export const httpLogger = pinoHttp({
   quietReqLogger: !isProduction,
   quietResLogger: !isProduction,
   customSuccessObject: (req: any) => {
-    if (!req.url?.startsWith("/api") && !req.url?.startsWith("/t/") && !req.url?.startsWith("/qr/")) {
-      logger.warn({
-        diagnostic: "UNEXPECTED_NON_API_ROUTE",
-        method: req.method,
-        url: req.url,
-        referer: req.headers?.referer,
-        origin: req.headers?.origin,
-        userAgent: req.headers?.["user-agent"],
-        host: req.headers?.host,
-      }, "Unexpected route hitting server");
+    const reqUrl = req.originalUrl || req.url || "";
+    const pathname = reqUrl.split("?")[0] || "";
+    const isApiOrPublic =
+      pathname.startsWith("/api") ||
+      pathname.startsWith("/t/") ||
+      pathname.startsWith("/qr/") ||
+      pathname === "/favicon.ico" ||
+      pathname === "/robots.txt";
+
+    const extra: Record<string, any> = {};
+    if (!isApiOrPublic) {
+      extra.diagnostic = "UNEXPECTED_NON_API_ROUTE";
+      extra.requestedPath = pathname;
+      extra.fullUrl = reqUrl;
+      if (req.headers?.referer) extra.referer = req.headers.referer;
     }
+
     const hasQuery = req.query && Object.keys(req.query).length > 0;
-    return hasQuery ? { query: req.query } : {};
+    if (hasQuery) extra.query = req.query;
+
+    return extra;
   },
   customErrorObject: (_req: any, _res: any, err: Error) => ({
     err: err?.message || String(err),
@@ -84,25 +92,29 @@ export const httpLogger = pinoHttp({
   customLogLevel: (_req, res, err) => {
     if (res.statusCode >= 500 || err) return "error";
     if (res.statusCode >= 400) return "warn";
-    return "info";
+    // Lower routine successful requests (2xx, 3xx) to debug to prevent log bombardment
+    return "debug";
   },
   customSuccessMessage: (req: any, res: any, responseTime: number) => {
     const ip = getClientIp(req);
     const ipPart = ip ? ` [ip: ${ip}]` : "";
     const idPart = req.id ? ` [id: ${String(req.id).slice(0, 8)}]` : "";
     const ms = Math.round(responseTime);
-    return `${req.method} ${req.url} -> ${res.statusCode} (${ms}ms)${ipPart}${idPart}`;
+    const reqUrl = req.originalUrl || req.url || "";
+    return `${req.method} ${reqUrl} -> ${res.statusCode} (${ms}ms)${ipPart}${idPart}`;
   },
   customErrorMessage: (req: any, res: any, err: Error) => {
     const ip = getClientIp(req);
     const ipPart = ip ? ` [ip: ${ip}]` : "";
     const idPart = req.id ? ` [id: ${String(req.id).slice(0, 8)}]` : "";
-    return `${req.method} ${req.url} -> ${res.statusCode}${ipPart}${idPart} - ${err.message}`;
+    const reqUrl = req.originalUrl || req.url || "";
+    return `${req.method} ${reqUrl} -> ${res.statusCode}${ipPart}${idPart} - ${err.message}`;
   },
   autoLogging: {
     ignore: (req) => {
       // Don't spam logs for frequent health checks
-      return req.url === "/api/health";
+      const reqUrl = req.originalUrl || req.url || "";
+      return reqUrl === "/api/health" || reqUrl === "/health";
     },
   },
 });

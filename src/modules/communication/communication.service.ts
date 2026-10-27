@@ -38,7 +38,8 @@ const initiateCall = async ({
   // 3. Ask Edesy to initiate the call
   const edesyCall = await edesyService.initiateCall(
     visitorPhoneNumber,
-    contact.contactEndpointPhoneNumber
+    contact.contactEndpointPhoneNumber,
+    session.reference
   );
 
   // 4. Store the actual provider call
