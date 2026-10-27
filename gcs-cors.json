@@ -1,6 +1,12 @@
 [
   {
-    "origin": ["*"],
+    "origin": [
+      "https://kauntact.in",
+      "https://www.kauntact.in",
+      "http://localhost:5173",
+      "https://pingin-api-79810006046.asia-south1.run.app",
+      "*"
+    ],
     "method": ["GET", "PUT", "POST", "HEAD", "OPTIONS"],
     "responseHeader": [
       "Content-Type",
