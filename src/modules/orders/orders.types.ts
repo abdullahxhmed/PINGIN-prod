@@ -50,3 +50,12 @@ export interface ReconcilePaymentInput {
   currency?: string | undefined;
   rawPayload?: any;
 }
+
+export const VerifyPaymentSchema = z.object({
+  orderNumber: z.string().trim().min(1, "Order number is required"),
+  razorpayOrderId: z.string().trim().min(1, "Razorpay Order ID is required"),
+  razorpayPaymentId: z.string().trim().min(1, "Razorpay Payment ID is required"),
+  razorpaySignature: z.string().trim().min(1, "Razorpay signature is required"),
+});
+
+export type VerifyPaymentInput = z.infer<typeof VerifyPaymentSchema>;

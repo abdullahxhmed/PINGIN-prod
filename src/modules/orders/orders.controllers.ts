@@ -1,7 +1,12 @@
 import type { Request, Response } from "express";
 import asyncHandler from "express-async-handler";
-import { CheckoutOrderSchema } from "./orders.types.js";
-import { createOrderFromCheckout, getOrderStatus, trackOrderPublicly } from "./orders.services.js";
+import { CheckoutOrderSchema, VerifyPaymentSchema } from "./orders.types.js";
+import {
+  createOrderFromCheckout,
+  getOrderStatus,
+  trackOrderPublicly,
+  verifyAndConfirmPayment,
+} from "./orders.services.js";
 import { BadRequestError } from "../../errors/AppError.js";
 
 /**
@@ -19,6 +24,27 @@ export const checkoutOrderController = asyncHandler(async (req: Request, res: Re
 
   res.status(201).json({
     status: "success",
+    data: result,
+  });
+});
+
+/**
+ * Direct cryptographic verification of Razorpay payment signature.
+ * Transitions order to PAID instantly (<200ms) without waiting for webhook polling.
+ * POST /api/orders/verify-payment
+ */
+export const verifyPaymentController = asyncHandler(async (req: Request, res: Response) => {
+  const parsed = VerifyPaymentSchema.safeParse(req.body);
+  if (!parsed.success) {
+    throw new BadRequestError(parsed.error.issues.map((i) => i.message).join(", "));
+  }
+
+  const result = await verifyAndConfirmPayment(parsed.data);
+
+  res.status(200).json({
+    success: true,
+    status: "success",
+    orderNumber: result.orderNumber,
     data: result,
   });
 });
@@ -58,3 +84,4 @@ export const trackOrderPubliclyController = asyncHandler(async (req: Request, re
     data: result,
   });
 });
+

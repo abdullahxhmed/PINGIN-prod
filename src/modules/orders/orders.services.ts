@@ -1,11 +1,11 @@
 import crypto from "node:crypto";
 import { Prisma, OrderStatus, ReservationStatus, GrantStatus, PaymentStatus, OutboxStatus, QrTagStockState } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
-import { BadRequestError, ConflictError, NotFoundError } from "../../errors/AppError.js";
+import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError } from "../../errors/AppError.js";
 import { razorpayClient } from "../../integrations/razorpay/razorpay.client.js";
 import { shiprocketClient } from "../../integrations/shiprocket/shiprocket.client.js";
 import { resolveOrderImages } from "../catalog/catalog-images.service.js";
-import type { CheckoutOrderInput, CheckoutResult, ReconcilePaymentInput } from "./orders.types.js";
+import type { CheckoutOrderInput, CheckoutResult, ReconcilePaymentInput, VerifyPaymentInput } from "./orders.types.js";
 
 /**
  * Generates a memorable, non-collidable order number in the format KT024958.
@@ -917,4 +917,71 @@ const maskEmail = (email: string): string => {
 const maskPhone = (phone: string): string => {
   if (phone.length < 4) return phone;
   return phone.slice(0, 2) + "******" + phone.slice(-2);
+};
+
+/**
+ * Validates Razorpay client-side payment signature directly and commits order state immediately.
+ * Enables <200ms instant client redirect without waiting for async webhook polling.
+ */
+export const verifyAndConfirmPayment = async (
+  input: VerifyPaymentInput
+): Promise<{ orderNumber: string; status: OrderStatus }> => {
+  const { orderNumber, razorpayOrderId, razorpayPaymentId, razorpaySignature } = input;
+
+  // 1. Fetch order
+  const order = await prisma.order.findUnique({
+    where: { orderNumber },
+    select: {
+      id: true,
+      orderNumber: true,
+      status: true,
+      totalAmount: true,
+      currency: true,
+      razorpayOrderId: true,
+    },
+  });
+
+  if (!order) {
+    throw new NotFoundError(`Order '${orderNumber}' not found`);
+  }
+
+  // 2. Cryptographic signature verification using RAZORPAY_KEY_SECRET
+  const secret = process.env.RAZORPAY_KEY_SECRET;
+  if (!secret) {
+    throw new Error("Razorpay secret not configured on server (RAZORPAY_KEY_SECRET)");
+  }
+
+  const expectedSignature = crypto
+    .createHmac("sha256", secret)
+    .update(`${razorpayOrderId}|${razorpayPaymentId}`)
+    .digest("hex");
+
+  const expectedBuffer = Buffer.from(expectedSignature, "utf8");
+  const signatureBuffer = Buffer.from(razorpaySignature.trim(), "utf8");
+
+  if (
+    expectedBuffer.length !== signatureBuffer.length ||
+    !crypto.timingSafeEqual(expectedBuffer, signatureBuffer)
+  ) {
+    throw new UnauthorizedError("Invalid payment signature");
+  }
+
+  // 3. Atomically reconcile captured payment if not already marked PAID
+  if (order.status !== OrderStatus.PAID) {
+    await reconcileCapturedPayment({
+      providerOrderId: razorpayOrderId,
+      providerPaymentId: razorpayPaymentId,
+      amount: order.totalAmount,
+      currency: order.currency,
+      rawPayload: {
+        source: "DIRECT_CLIENT_SIGNATURE_VERIFICATION",
+        verifiedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  return {
+    orderNumber: order.orderNumber,
+    status: OrderStatus.PAID,
+  };
 };
