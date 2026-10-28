@@ -20,6 +20,9 @@ import {
   generateSingleTag,
   createPreprintedBatch,
 } from "../qr/qr.services.js";
+import { mailService, isMailConfigured, getMailConfig } from "../../integrations/mail/index.js";
+import { logger } from "../../lib/logger.js";
+import { prisma } from "../../lib/prisma.js";
 
 // ---------------------------------------------------------------------------
 // DASHBOARD
@@ -49,6 +52,21 @@ export const adminListUsersController = asyncHandler(async (req, res) => {
   if (!parsed.success) {
     throw new BadRequestError(parsed.error.issues[0]?.message ?? "Invalid query parameters");
   }
+  const adminId = (req as any).user?.id ?? "admin";
+  logger.info(
+    { event: "ADMIN_AUDIT_USER_LIST", adminId, query: parsed.data },
+    `[ADMIN_AUDIT] Admin ${adminId} accessed user list`
+  );
+  prisma.adminAuditLog
+    .create({
+      data: {
+        adminId,
+        action: "LIST_USERS",
+        metadata: { query: parsed.data, ip: req.ip },
+      },
+    })
+    .catch((err) => logger.error({ err }, "Failed to write AdminAuditLog"));
+
   const result = await adminListUsers(parsed.data);
   res.status(200).json(result);
 });
@@ -63,6 +81,22 @@ export const adminGetUserByIdController = asyncHandler(async (req, res) => {
   if (!parsed.success) {
     throw new BadRequestError(parsed.error.issues[0]?.message ?? "Invalid userId");
   }
+  const adminId = (req as any).user?.id ?? "admin";
+  logger.info(
+    { event: "ADMIN_AUDIT_VIEW_USER", adminId, targetUserId: parsed.data.userId },
+    `[ADMIN_AUDIT] Admin ${adminId} viewed per-user details for user ${parsed.data.userId}`
+  );
+  prisma.adminAuditLog
+    .create({
+      data: {
+        adminId,
+        action: "VIEW_USER_DETAILS",
+        target: parsed.data.userId,
+        metadata: { ip: req.ip, userAgent: req.headers["user-agent"] },
+      },
+    })
+    .catch((err) => logger.error({ err }, "Failed to write AdminAuditLog"));
+
   const user = await adminGetUserById(parsed.data.userId);
   if (!user) throw new NotFoundError("User not found.");
   res.status(200).json(user);
@@ -167,3 +201,75 @@ export const adminListCommunicationsController = asyncHandler(async (req, res) =
   const result = await adminListCommunicationSessions(parsed.data);
   res.status(200).json(result);
 });
+
+// ---------------------------------------------------------------------------
+// MAIL & SYSTEM ALERTS
+// ---------------------------------------------------------------------------
+
+/**
+ * @route   GET /api/admin/mail/status
+ * @desc    Get SMTP configuration status and test connection
+ * @access  Admin
+ */
+export const adminGetMailStatusController = asyncHandler(async (_req, res) => {
+  const config = getMailConfig();
+  const configured = isMailConfigured();
+  const connection = await mailService.verifyConnection();
+
+  res.status(200).json({
+    configured,
+    host: config.host || "(not set)",
+    port: config.port,
+    secure: config.secure,
+    service: config.service || null,
+    user: config.user ? `${config.user.slice(0, 3)}***` : "(not set)",
+    from: config.from,
+    adminEmail: config.adminEmail,
+    connection,
+  });
+});
+
+/**
+ * @route   POST /api/admin/mail/test
+ * @desc    Send a test notification email to the configured admin address
+ * @access  Admin
+ */
+export const adminSendTestMailController = asyncHandler(async (req, res) => {
+  const result = await mailService.sendCustomAdminNotification({
+    subject: "Test Notification from ParkPing Server",
+    title: "Mail Service Configuration Test",
+    message: "This is a test notification confirming that Nodemailer is correctly configured with your SMTP credentials on ParkPing.",
+    severity: "INFO",
+    details: {
+      testTimestamp: new Date().toISOString(),
+      triggeredByIp: req.ip,
+      userAgent: req.headers["user-agent"],
+    },
+  });
+
+  if (!result) {
+    throw new BadRequestError("Failed to deliver test email. Check server logs and SMTP credentials.");
+  }
+
+  res.status(200).json({
+    message: "Test email successfully sent to admin.",
+  });
+});
+
+/**
+ * @route   POST /api/admin/mail/check-stock
+ * @desc    Trigger immediate stock evaluation across inventory and send low-stock alerts
+ * @access  Admin
+ */
+export const adminTriggerStockCheckController = asyncHandler(async (_req, res) => {
+  const alerts = await mailService.checkAndAlertLowStock({
+    triggeredBy: "Manual Admin Stock Check API",
+    bypassCooldown: true,
+  });
+
+  res.status(200).json({
+    message: `Evaluated inventory stock. Dispatched ${alerts.length} alert(s).`,
+    alerts,
+  });
+});
+

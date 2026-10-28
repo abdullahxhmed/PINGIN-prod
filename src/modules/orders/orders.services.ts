@@ -6,6 +6,15 @@ import { razorpayClient } from "../../integrations/razorpay/razorpay.client.js";
 import { shiprocketClient } from "../../integrations/shiprocket/shiprocket.client.js";
 import { resolveOrderImages } from "../catalog/catalog-images.service.js";
 import type { CheckoutOrderInput, CheckoutResult, ReconcilePaymentInput, VerifyPaymentInput } from "./orders.types.js";
+import { logger } from "../../lib/logger.js";
+import { emailService as mailService } from "../../emails/email.service.js";
+import { calculateShippingFeeForOrder } from "../shipping/shipping.services.js";
+import {
+  encryptData,
+  decryptData,
+  encryptPhoneNumber,
+  decryptPhoneNumber,
+} from "../../utils/data-protection.js";
 
 /**
  * Generates a memorable, non-collidable order number in the format KT024958.
@@ -77,7 +86,7 @@ export const createOrderFromCheckout = async (
         razorpayOrderId: existingOrder.razorpayOrderId,
         keyId: razorpayClient.getKeyId(),
         customerEmail: existingOrder.customerEmail ?? undefined,
-        customerPhone: existingOrder.customerPhone ?? undefined,
+        customerPhone: existingOrder.customerPhone ? decryptPhoneNumber(existingOrder.customerPhone) : undefined,
         items: existingOrder.items.map((i) => {
           const snap = i.productSnapshot as any;
           return {
@@ -131,7 +140,7 @@ export const createOrderFromCheckout = async (
         razorpayOrderId: reservation.order.razorpayOrderId,
         keyId: razorpayClient.getKeyId(),
         customerEmail: reservation.order.customerEmail ?? undefined,
-        customerPhone: reservation.order.customerPhone ?? undefined,
+        customerPhone: reservation.order.customerPhone ? decryptPhoneNumber(reservation.order.customerPhone) : undefined,
         items: reservation.items.map((i) => ({
           variantName: i.variant.name,
           quantity: i.quantity,
@@ -189,7 +198,12 @@ export const createOrderFromCheckout = async (
   });
 
   const taxAmount = 0;
-  const shippingAmount = 0;
+  const shippingCalculation = await calculateShippingFeeForOrder(
+    reservation.items.map((i) => ({ variantId: i.variantId, quantity: i.quantity })),
+    input.shippingAddress.postalCode,
+    "PREPAID"
+  );
+  const shippingAmount = shippingCalculation.shippingFee;
   const totalAmount = subtotalAmount + taxAmount + shippingAmount;
 
   if (totalAmount <= 0) {
@@ -206,7 +220,7 @@ export const createOrderFromCheckout = async (
         orderNumber,
         userId,
         customerEmail: input.customerEmail?.toLowerCase() ?? null,
-        customerPhone: input.customerPhone ?? null,
+        customerPhone: input.customerPhone ? encryptPhoneNumber(input.customerPhone) : null,
         reservationId: reservation.id,
         status: OrderStatus.PAYMENT_PENDING,
         subtotalAmount,
@@ -217,10 +231,10 @@ export const createOrderFromCheckout = async (
         checkoutIdempotencyKey: input.checkoutIdempotencyKey ?? null,
         shippingAddress: {
           create: {
-            fullName: input.shippingAddress.fullName,
-            phoneNumber: input.shippingAddress.phoneNumber,
-            addressLine1: input.shippingAddress.addressLine1,
-            addressLine2: input.shippingAddress.addressLine2 ?? null,
+            fullName: encryptData(input.shippingAddress.fullName),
+            phoneNumber: encryptPhoneNumber(input.shippingAddress.phoneNumber),
+            addressLine1: encryptData(input.shippingAddress.addressLine1),
+            addressLine2: input.shippingAddress.addressLine2 ? encryptData(input.shippingAddress.addressLine2) : null,
             city: input.shippingAddress.city,
             state: input.shippingAddress.state,
             postalCode: input.shippingAddress.postalCode,
@@ -312,6 +326,7 @@ export const reconcileCapturedPayment = async (input: ReconcilePaymentInput): Pr
     where: { razorpayOrderId: providerOrderId },
     include: {
       items: true,
+      shippingAddress: true,
       reservation: {
         include: {
           items: {
@@ -627,6 +642,68 @@ export const reconcileCapturedPayment = async (input: ReconcilePaymentInput): Pr
       });
     }
   });
+
+  // Asynchronously dispatch admin notification for successfully paid order
+  mailService
+    .sendOrderPaidAdminNotification({
+      orderNumber: order.orderNumber,
+      orderId: order.id,
+      totalAmount: order.totalAmount,
+      currency: order.currency,
+      customerEmail: order.customerEmail,
+      customerPhone: order.customerPhone ? decryptPhoneNumber(order.customerPhone) : null,
+      providerPaymentId,
+      paidAt: new Date(),
+      shippingAddress: order.shippingAddress
+        ? {
+            fullName: decryptData(order.shippingAddress.fullName),
+            phoneNumber: decryptPhoneNumber(order.shippingAddress.phoneNumber),
+            addressLine1: decryptData(order.shippingAddress.addressLine1),
+            addressLine2: order.shippingAddress.addressLine2 ? decryptData(order.shippingAddress.addressLine2) : undefined,
+            city: order.shippingAddress.city,
+            state: order.shippingAddress.state,
+            postalCode: order.shippingAddress.postalCode,
+            country: order.shippingAddress.country,
+          }
+        : undefined,
+      items: order.items.map((i) => {
+        const snap = i.productSnapshot as any;
+        return {
+          variantName: snap?.variant?.name || "Product Item",
+          sku: snap?.variant?.sku,
+          imageUrl: snap?.variant?.imageUrl || snap?.product?.imageUrl || undefined,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice,
+          totalPrice: i.totalPrice,
+        };
+      }),
+    })
+    .catch((err) => {
+      logger.error({ err, orderNumber: order.orderNumber }, "Failed to send order paid admin email");
+    });
+
+  // Check if bulk inventory items decremented below their reorder level and notify admin
+  const affectedBulkSkus = new Set<string>();
+  if (order.reservation?.items) {
+    for (const item of order.reservation.items) {
+      for (const comp of item.variant?.components || []) {
+        if (comp.inventorySku) {
+          affectedBulkSkus.add(comp.inventorySku);
+        }
+      }
+    }
+  }
+
+  if (affectedBulkSkus.size > 0) {
+    mailService
+      .checkAndAlertLowStock({
+        skus: [...affectedBulkSkus],
+        triggeredBy: `Order #${order.orderNumber} payment reconciliation`,
+      })
+      .catch((err) => {
+        logger.error({ err }, "Failed to check low stock after payment reconciliation");
+      });
+  }
 };
 
 /**
@@ -750,13 +827,13 @@ const formatUnifiedOrderTracking = async (order: any) => {
     paymentStatus: latestPayment?.status ?? "PENDING",
     razorpayOrderId: order.razorpayOrderId,
     customerEmail: order.customerEmail ? maskEmail(order.customerEmail) : null,
-    customerPhone: order.customerPhone ? maskPhone(order.customerPhone) : null,
+    customerPhone: order.customerPhone ? maskPhone(decryptPhoneNumber(order.customerPhone)) : null,
     shippingAddress: order.shippingAddress
       ? {
-          fullName: order.shippingAddress.fullName,
-          phoneNumber: order.shippingAddress.phoneNumber,
-          addressLine1: order.shippingAddress.addressLine1,
-          addressLine2: order.shippingAddress.addressLine2,
+          fullName: decryptData(order.shippingAddress.fullName),
+          phoneNumber: decryptPhoneNumber(order.shippingAddress.phoneNumber),
+          addressLine1: decryptData(order.shippingAddress.addressLine1),
+          addressLine2: order.shippingAddress.addressLine2 ? decryptData(order.shippingAddress.addressLine2) : null,
           city: order.shippingAddress.city,
           state: order.shippingAddress.state,
           postalCode: order.shippingAddress.postalCode,

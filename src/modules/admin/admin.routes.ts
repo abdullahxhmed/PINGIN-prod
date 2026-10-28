@@ -13,7 +13,11 @@ import {
   adminCreateBatchController,
   adminRevokeQrTagController,
   adminListCommunicationsController,
+  adminGetMailStatusController,
+  adminSendTestMailController,
+  adminTriggerStockCheckController,
 } from "./admin.controllers.js";
+import { adminOverviewController } from "./overview/admin.overview.controllers.js";
 
 const router = express.Router();
 
@@ -34,6 +38,16 @@ router.use("/inventory", adminInventoryRoutes);
 // Orders & Fulfillment Management
 // ---------------------------------------------------------------------------
 router.use("/orders", adminOrderRoutes);
+
+// ---------------------------------------------------------------------------
+// Overview
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/admin/overview?period=today|7d|30d
+ * Consolidated operational overview: usage, call costs, activation, plus, and inventory.
+ */
+router.get("/overview", adminOverviewController);
 
 // ---------------------------------------------------------------------------
 // Dashboard
@@ -108,5 +122,27 @@ router.post("/qr/tags/:tagId/revoke", adminRevokeQrTagController);
  * Paginated list of communication sessions with nested call details.
  */
 router.get("/communications", adminListCommunicationsController);
+
+// ---------------------------------------------------------------------------
+// Mail Service & Alerts
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/admin/mail/status
+ * Get SMTP configuration and connection test status.
+ */
+router.get("/mail/status", adminGetMailStatusController);
+
+/**
+ * POST /api/admin/mail/test
+ * Send a test email to the configured admin email.
+ */
+router.post("/mail/test", adminSendTestMailController);
+
+/**
+ * POST /api/admin/mail/check-stock
+ * Run an immediate low-stock audit and dispatch alerts.
+ */
+router.post("/mail/check-stock", adminTriggerStockCheckController);
 
 export default router;

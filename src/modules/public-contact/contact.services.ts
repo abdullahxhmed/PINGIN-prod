@@ -3,7 +3,7 @@ import {prisma} from "../../lib/prisma.js"
 import {CommunicationSessionType} from "@prisma/client";
 import crypto from "crypto"
 import { edesyService } from "../../integrations/edesy.service.js";
-import { encryptPhoneNumber } from "../../utils/phone-encryption.js";
+import { encryptPhoneNumber, decryptPhoneNumber, decryptData } from "../../utils/data-protection.js";
 
 const getContact = async (contactToken: string) => {
     const contactDetails = await prisma.contactLink.findUnique({
@@ -37,7 +37,7 @@ const getContact = async (contactToken: string) => {
 
     return {
         id:contactDetails.id,
-        name: contactDetails.resource.name,
+        name: decryptData(contactDetails.resource.name),
         hasRegistrationNumber,
         vehicleDetails:{
             colour: contactDetails.resource.vehicleDetail?.vehicleColour
@@ -105,7 +105,8 @@ const getCommunicationContact = async (token: string) => {
                             contactEndpoint: {
                                 select: {
                                     id: true,
-                                    phoneNumber:true
+                                    phoneNumber: true,
+                                    phoneEncrypted: true,
                                 },
                             },
                         },
@@ -132,7 +133,7 @@ const getCommunicationContact = async (token: string) => {
         contactLinkId: contactLink.id,
         resourceId: contactLink.resourceId,
         contactEndpointId: contactEndpoint.id,
-        contactEndpointPhoneNumber: contactEndpoint.phoneNumber
+        contactEndpointPhoneNumber: decryptPhoneNumber(contactEndpoint.phoneEncrypted || contactEndpoint.phoneNumber),
     };
 };
 

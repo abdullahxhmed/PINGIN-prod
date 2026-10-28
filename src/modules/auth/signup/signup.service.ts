@@ -5,14 +5,23 @@ import { createAccessToken, generateRefreshToken } from "../auth.services.js"
 import { otpService } from "../otp.service.js"
 import { checkOtpRateLimit } from "../../../middleware/otp-rateLimiter.js";
 import argon2 from "argon2"
-import { encryptPhoneNumber, generatePhoneLookup } from "../../../utils/phone-encryption.js";
+import {
+  encryptPhoneNumber,
+  decryptPhoneNumber,
+  generatePhoneLookup,
+  getPossibleUserMobileMatches,
+} from "../../../utils/data-protection.js";
 
 const requestSignupOtp = async (mobileNo:string, ip:string) => {
-    const user = await prisma.user.findUnique({
+    const lookup = generatePhoneLookup(mobileNo);
+    const user = await prisma.user.findFirst({
         where: {
-            mobileNumber: mobileNo
-        }
-    })
+            OR: [
+                { mobileLookup: lookup },
+                { mobileNumber: { in: getPossibleUserMobileMatches(mobileNo) } },
+            ],
+        },
+    });
     if(user){
         throw new ConflictError("User already Exists");
     }
@@ -31,55 +40,49 @@ const verifySignup = async (mobileNo: string,password:string, otp: string, userN
         OtpPurpose.SIGNUP
     );
 
-    // OTP verfication succeeded if we reached here
+    // OTP verification succeeded if we reached here
     const hashedPassword = await argon2.hash(password);
 
-    //Create new user
-    try{
-        const {user} = await prisma.$transaction(async (tx) => {
-            console.log("user creation transaction started")
-            const user = await prisma.user.create({
-                data: {
-                    name: userName,
-                    mobileNumber: mobileNo,
-                    passwordHash: hashedPassword
-                }
-            });
+    // Create new user
+    const { user } = await prisma.$transaction(async (tx) => {
+        const lookup = generatePhoneLookup(mobileNo);
+        const encryptedPhone = encryptPhoneNumber(mobileNo);
 
-            const contactEndpoint = await tx.contactEndpoint.create({
-                data: {
-                    userId: user.id,
-                    type: "PHONE",
-                    phoneNumber: mobileNo,
-                    phoneEncrypted: encryptPhoneNumber(mobileNo),
-                    phoneLookup: generatePhoneLookup(mobileNo),
-                }
-            });
-
-            return {user, contactEndpoint};
-            })
-
-            
-        const accessToken = createAccessToken(user.id);
-        const refreshToken = await generateRefreshToken(user.id);
-        return {
-            user: {
-                id: user.id,
-                name: user.name,
-                mobileNumber: user.mobileNumber,
-                role: user.role,
+        const newUser = await tx.user.create({
+            data: {
+                name: userName,
+                mobileNumber: encryptedPhone,
+                mobileLookup: lookup,
+                passwordHash: hashedPassword,
             },
-            accessToken: accessToken,
-            refreshToken: refreshToken
-        }
-    }
-    catch(err){
-        throw new Error;
-    }
-    
+        });
 
+        const contactEndpoint = await tx.contactEndpoint.create({
+            data: {
+                userId: newUser.id,
+                type: "PHONE",
+                phoneNumber: encryptedPhone,
+                phoneEncrypted: encryptedPhone,
+                phoneLookup: lookup,
+            },
+        });
 
-}
+        return { user: newUser, contactEndpoint };
+    });
+
+    const accessToken = createAccessToken(user.id);
+    const refreshToken = await generateRefreshToken(user.id);
+    return {
+        user: {
+            id: user.id,
+            name: user.name,
+            mobileNumber: decryptPhoneNumber(user.mobileNumber),
+            role: user.role,
+        },
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+    };
+};
 
 
 

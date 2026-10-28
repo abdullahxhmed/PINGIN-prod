@@ -12,3 +12,7 @@ node_modules/
 
 dist/
 backups/
+
+# Scripts
+scripts/
+src/scripts/

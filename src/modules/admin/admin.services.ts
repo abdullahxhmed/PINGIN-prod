@@ -1,5 +1,7 @@
 import { prisma } from "../../lib/prisma.js";
 import { QrTagStatus, QrTagOrigin, OrderStatus } from "@prisma/client";
+import { decryptPhoneNumber, decryptData, generatePhoneLookup } from "../../utils/data-protection.js";
+import { getConsolidatedTagCounts } from "./overview/admin.overview.services.js";
 
 // ---------------------------------------------------------------------------
 // USERS
@@ -30,10 +32,17 @@ export const adminListUsers = async ({
   }
 
   if (search) {
-    where.OR = [
+    const orConditions: any[] = [
       { name: { contains: search, mode: "insensitive" } },
       { mobileNumber: { contains: search } },
     ];
+    try {
+      const lookup = generatePhoneLookup(search);
+      orConditions.push({ mobileLookup: lookup });
+    } catch {
+      // ignore search strings that cannot be normalized as phone numbers
+    }
+    where.OR = orConditions;
   }
 
   const [total, users] = await prisma.$transaction([
@@ -73,7 +82,7 @@ export const adminListUsers = async ({
     users: users.map((u) => ({
       id: u.id,
       name: u.name,
-      mobileNumber: u.mobileNumber,
+      mobileNumber: decryptPhoneNumber(u.mobileNumber),
       active: u.active,
       createdAt: u.createdAt,
       resourceCount: u._count.resources,
@@ -121,16 +130,16 @@ export const adminGetUserById = async (userId: string) => {
   return {
     id: user.id,
     name: user.name,
-    mobileNumber: user.mobileNumber,
+    mobileNumber: decryptPhoneNumber(user.mobileNumber),
     active: user.active,
     createdAt: user.createdAt,
     hasContactEndpoint: Boolean(user.contactEndpoint),
     contactEndpoint: user.contactEndpoint,
     resources: user.resources.map((r) => ({
       id: r.id,
-      name: r.name,
+      name: decryptData(r.name),
       type: r.type,
-      registrationNum: r.vehicleDetail?.registrationNum ?? null,
+      registrationNum: r.vehicleDetail?.registrationNum ? decryptData(r.vehicleDetail.registrationNum) : null,
       vehicleColour: r.vehicleDetail?.vehicleColour ?? null,
       qrTag: r.qrTag[0] ?? null,
     })),
@@ -207,9 +216,14 @@ export const adminListQrTags = async ({
       resource: t.resource
         ? {
             id: t.resource.id,
-            name: t.resource.name,
+            name: decryptData(t.resource.name),
             type: t.resource.type,
-            owner: t.resource.user,
+            owner: t.resource.user
+              ? {
+                  ...t.resource.user,
+                  mobileNumber: decryptPhoneNumber(t.resource.user.mobileNumber),
+                }
+              : null,
           }
         : null,
     })),
@@ -220,11 +234,12 @@ export const adminListQrTags = async ({
  * Get QR tag inventory summary counts by status.
  */
 export const adminQrInventorySummary = async () => {
-  const [total, assigned, unassigned, revoked] = await prisma.$transaction([
+  const [total, assigned, unassigned, revoked, consolidated] = await Promise.all([
     prisma.qrTag.count(),
     prisma.qrTag.count({ where: { status: QrTagStatus.ASSIGNED } }),
     prisma.qrTag.count({ where: { status: QrTagStatus.UNASSIGNED } }),
     prisma.qrTag.count({ where: { status: QrTagStatus.REVOKED } }),
+    getConsolidatedTagCounts(),
   ]);
 
   const byOrigin = await prisma.qrTag.groupBy({
@@ -237,6 +252,10 @@ export const adminQrInventorySummary = async () => {
     assigned,
     unassigned,
     revoked,
+    readyToSell: consolidated.readyToSell,
+    inUse: consolidated.inUse,
+    inWarehouse: consolidated.inWarehouse,
+    reserved: consolidated.reserved,
     byOrigin: byOrigin.map((o) => ({ origin: o.origin, count: o._count.id })),
   };
 };
@@ -348,6 +367,24 @@ export const adminListCommunicationSessions = async ({
     }),
   ]);
 
+  const safeDecrypt = (val: string | null | undefined, fallback: string = "") => {
+    if (!val) return fallback;
+    try {
+      return decryptData(val);
+    } catch {
+      return fallback;
+    }
+  };
+
+  const safeDecryptPhone = (val: string | null | undefined, fallback: string = "") => {
+    if (!val) return fallback;
+    try {
+      return decryptPhoneNumber(val);
+    } catch {
+      return fallback;
+    }
+  };
+
   return {
     page,
     limit,
@@ -368,11 +405,20 @@ export const adminListCommunicationSessions = async ({
         endedAt: s.endedAt ?? latestCall?.endedAt ?? null,
         resource: {
           id: s.resource.id,
-          name: s.resource.name,
+          name: safeDecrypt(s.resource.name, "Vehicle Tag"),
           type: s.resource.type,
-          owner: s.resource.user,
+          owner: s.resource.user
+            ? {
+                ...s.resource.user,
+                mobileNumber: safeDecryptPhone(s.resource.user.mobileNumber, "—"),
+              }
+            : null,
         },
-        calls: s.calls,
+        calls: s.calls.map((c) => ({
+          ...c,
+          caller: c.caller ? safeDecryptPhone(c.caller, c.caller) : c.caller,
+          callee: c.callee ? safeDecryptPhone(c.callee, c.callee) : c.callee,
+        })),
         callCount: s.calls.length,
         totalDurationSec: s.calls.reduce((acc, c) => acc + (c.durationSec ?? 0), 0),
       };
@@ -461,6 +507,7 @@ export const adminDashboardSummary = async () => {
   ]);
 
   const totalRevenuePaise = revenueResult._sum.totalAmount ?? 0;
+  const consolidated = await getConsolidatedTagCounts();
 
   return {
     users: { total: totalUsers, active: activeUsers },
@@ -468,14 +515,21 @@ export const adminDashboardSummary = async () => {
     qrTags: {
       total: totalQrTags,
       assigned: assignedQrTags,
-      available: totalQrTags - assignedQrTags,
+      available: consolidated.readyToSell, // Unified definition: ready to sell (in warehouse minus reserved)
+      readyToSell: consolidated.readyToSell,
+      inUse: consolidated.inUse,
+      inWarehouse: consolidated.inWarehouse,
+      reserved: consolidated.reserved,
     },
     orders: {
       total: totalOrders,
       paid: paidOrders,
       totalRevenuePaise,
       totalRevenueRupees: Math.round(totalRevenuePaise / 100),
-      recentOrders,
+      recentOrders: recentOrders.map((o) => ({
+        ...o,
+        customerPhone: o.customerPhone ? decryptPhoneNumber(o.customerPhone) : o.customerPhone,
+      })),
     },
     communications: { totalSessions },
     recentActivity: recentSessions.map((s) => ({

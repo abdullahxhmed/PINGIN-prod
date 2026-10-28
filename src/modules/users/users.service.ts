@@ -1,22 +1,36 @@
 import { prisma } from "../../lib/prisma.js";
 import { BadRequestError, NotFoundError } from "../../errors/AppError.js";
 import argon2 from "argon2";
+import {
+  encryptPhoneNumber,
+  decryptPhoneNumber,
+  generatePhoneLookup,
+} from "../../utils/data-protection.js";
 
 const createUser = async (name: string, mobileNumber: string) => {
   console.time("create-user");
+  const encryptedPhone = encryptPhoneNumber(mobileNumber);
+  const lookup = generatePhoneLookup(mobileNumber);
   const user = await prisma.user.create({
     data: {
       name,
-      mobileNumber,
+      mobileNumber: encryptedPhone,
+      mobileLookup: lookup,
     },
   });
   console.log(user);
-  return user;
+  return {
+    ...user,
+    mobileNumber: decryptPhoneNumber(user.mobileNumber),
+  };
 };
 
 const getUsers = async () => {
   const users = await prisma.user.findMany();
-  return users;
+  return users.map((u) => ({
+    ...u,
+    mobileNumber: decryptPhoneNumber(u.mobileNumber),
+  }));
 };
 
 const updateUserName = async (userId: string, name: string) => {
@@ -49,7 +63,10 @@ const updateUserName = async (userId: string, name: string) => {
     },
   });
 
-  return updatedUser;
+  return {
+    ...updatedUser,
+    mobileNumber: decryptPhoneNumber(updatedUser.mobileNumber),
+  };
 };
 
 const changeUserPassword = async (

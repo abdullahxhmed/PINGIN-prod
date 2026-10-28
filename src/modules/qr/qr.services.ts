@@ -8,6 +8,7 @@ import {
 } from "../../errors/AppError.js";
 import { GrantStatus, QrAssignmentMethod, QrTagOrigin, QrTagStatus, QrTagStockState } from "@prisma/client";
 import { getUserSubscription, activateUserPlusSubscription } from "../subscriptions/subscriptions.services.js";
+import { decryptData, decryptPhoneNumber } from "../../utils/data-protection.js";
 
 // Crockford-style character sets excluding visually ambiguous characters: 0, 1, I, O, L
 const LETTER_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ"; // 23 letters (no I, L, O)
@@ -98,9 +99,9 @@ export const getQrTagDetails = async (identifier: string) => {
     pairedResource: tag.resource
       ? {
           id: tag.resource.id,
-          name: tag.resource.name,
+          name: decryptData(tag.resource.name),
           type: tag.resource.type,
-          registrationNum: tag.resource.vehicleDetail?.registrationNum ?? null,
+          registrationNum: tag.resource.vehicleDetail?.registrationNum ? decryptData(tag.resource.vehicleDetail.registrationNum) : null,
           vehicleColour: tag.resource.vehicleDetail?.vehicleColour ?? null,
           contactToken: tag.resource.contactLink?.token ?? null,
         }
@@ -200,9 +201,9 @@ export const resolveTagToken = async (rawToken: string) => {
     redirectUrl: `/contact/${contactToken}`,
     resource: {
       id: tag.resource.id,
-      name: tag.resource.name,
+      name: decryptData(tag.resource.name),
       type: tag.resource.type,
-      registrationNum: tag.resource.vehicleDetail?.registrationNum ?? null,
+      registrationNum: tag.resource.vehicleDetail?.registrationNum ? decryptData(tag.resource.vehicleDetail.registrationNum) : null,
       vehicleColour: tag.resource.vehicleDetail?.vehicleColour ?? null,
     },
   };
@@ -322,7 +323,7 @@ export const pairQrTag = async ({
         },
         resource: {
           id: targetResource.id,
-          name: targetResource.name,
+          name: decryptData(targetResource.name),
         },
       };
     }
@@ -481,9 +482,9 @@ export const pairQrTag = async ({
         select: { mobileNumber: true },
       });
       if (userRecord?.mobileNumber) {
-        const matchingOrder = await tx.order.findFirst({
+        const rawUserPhone = decryptPhoneNumber(userRecord.mobileNumber);
+        const candidateOrders = await tx.order.findMany({
           where: {
-            customerPhone: userRecord.mobileNumber,
             subscriptionGrants: {
               some: {
                 status: { in: [GrantStatus.PENDING_CLAIM, GrantStatus.PENDING_PAIRING] },
@@ -498,6 +499,10 @@ export const pairQrTag = async ({
             },
           },
         });
+
+        const matchingOrder = candidateOrders.find(
+          (o) => o.customerPhone && decryptPhoneNumber(o.customerPhone) === rawUserPhone
+        );
 
         const phoneGrant = matchingOrder?.subscriptionGrants?.[0];
         if (phoneGrant) {
@@ -529,7 +534,7 @@ export const pairQrTag = async ({
       });
 
       if (redeemed.count === 1) {
-        await activateUserPlusSubscription(tx, userId, grantToRedeem.plusDurationMonths);
+        await activateUserPlusSubscription(tx, userId, grantToRedeem.plusDurationMonths, "included_with_order");
         activatedPlus = true;
         plusDurationMonths = grantToRedeem.plusDurationMonths;
       }
@@ -554,9 +559,9 @@ export const pairQrTag = async ({
     },
     resource: {
       id: targetResource.id,
-      name: targetResource.name,
+      name: decryptData(targetResource.name),
       type: targetResource.type,
-      registrationNum: targetResource.vehicleDetail?.registrationNum ?? null,
+      registrationNum: targetResource.vehicleDetail?.registrationNum ? decryptData(targetResource.vehicleDetail.registrationNum) : null,
     },
   };
 };
@@ -781,9 +786,9 @@ export const generateSingleTag = async ({
       },
       resource: {
         id: resource.id,
-        name: resource.name,
+        name: decryptData(resource.name),
         type: resource.type,
-        registrationNum: resource.vehicleDetail?.registrationNum ?? null,
+        registrationNum: resource.vehicleDetail?.registrationNum ? decryptData(resource.vehicleDetail.registrationNum) : null,
       },
     };
   }
@@ -964,9 +969,9 @@ export const getUserTags = async (userId: string) => {
     resource: tag.resource
       ? {
           id: tag.resource.id,
-          name: tag.resource.name,
+          name: decryptData(tag.resource.name),
           type: tag.resource.type,
-          registrationNum: tag.resource.vehicleDetail?.registrationNum ?? null,
+          registrationNum: tag.resource.vehicleDetail?.registrationNum ? decryptData(tag.resource.vehicleDetail.registrationNum) : null,
           vehicleColour: tag.resource.vehicleDetail?.vehicleColour ?? null,
         }
       : null,

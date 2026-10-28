@@ -211,7 +211,8 @@ enum OutboxStatus {
 model User {
   id           String   @id @default(uuid()) @db.Uuid
   name         String
-  mobileNumber String   @unique
+  mobileNumber String
+  mobileLookup String?  @unique
   role         UserRole @default(USER)
   passwordHash String?
   active       Boolean  @default(true)
@@ -451,6 +452,7 @@ model Subscription {
 
   startsAt          DateTime         @default(now())
   expiresAt         DateTime?
+  source            String?
 
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
@@ -777,6 +779,7 @@ model Order {
   shippingAmount         Int                    @default(0)
   totalAmount            Int                    // In paise
   currency               String                 @default("INR")
+  deliveredAt            DateTime?
 
   reservation            InventoryReservation   @relation(fields: [reservationId], references: [id], onDelete: Restrict)
   user                   User?                  @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -1058,6 +1061,18 @@ model StorefrontSlotHistory {
 
   @@index([slotId, assignedAt])
   @@index([slotKey, assignedAt])
+}
+
+model AdminAuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  adminId   String
+  action    String   // e.g. "VIEW_USER_DETAILS", "LIST_USERS"
+  target    String?  // e.g. userId or resource identifier
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([adminId, createdAt])
+  @@index([target])
 }
 
 

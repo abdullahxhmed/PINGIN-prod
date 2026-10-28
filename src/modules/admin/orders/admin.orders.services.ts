@@ -2,6 +2,10 @@ import { OrderStatus, Prisma } from "@prisma/client";
 import { prisma } from "../../../lib/prisma.js";
 import { NotFoundError } from "../../../errors/AppError.js";
 import { resolveOrderImages, resolveOrderListImages } from "../../catalog/catalog-images.service.js";
+import {
+  decryptPhoneNumber,
+  decryptShippingAddress,
+} from "../../../utils/data-protection.js";
 
 export interface AdminListOrdersQuery {
   page?: number | undefined;
@@ -108,10 +112,15 @@ export const adminListOrders = async ({
         subtotalAmount: o.subtotalAmount,
         currency: o.currency,
         customerEmail: o.customerEmail,
-        customerPhone: o.customerPhone,
+        customerPhone: o.customerPhone ? decryptPhoneNumber(o.customerPhone) : o.customerPhone,
         isClaimed: Boolean(o.userId || o.purchaseClaim),
-        user: o.user,
-        shippingAddress: o.shippingAddress,
+        user: o.user
+          ? {
+              ...o.user,
+              mobileNumber: decryptPhoneNumber(o.user.mobileNumber),
+            }
+          : null,
+        shippingAddress: decryptShippingAddress(o.shippingAddress),
         itemCount: o.items.reduce((sum, item) => sum + item.quantity, 0),
         items: o.items.map((i) => {
           const snap = i.productSnapshot as any;
@@ -213,6 +222,14 @@ export const adminGetOrderById = async (orderId: string) => {
 
   return {
     ...order,
+    user: order.user
+      ? {
+          ...order.user,
+          mobileNumber: decryptPhoneNumber(order.user.mobileNumber),
+        }
+      : null,
+    customerPhone: order.customerPhone ? decryptPhoneNumber(order.customerPhone) : order.customerPhone,
+    shippingAddress: decryptShippingAddress(order.shippingAddress),
     items: resolvedItems,
   };
 };
@@ -230,6 +247,7 @@ export const adminUpdateOrderStatus = async (orderId: string, newStatus: OrderSt
     where: { id: orderId },
     data: {
       status: newStatus,
+      ...(newStatus === OrderStatus.DELIVERED ? { deliveredAt: order.deliveredAt ?? new Date() } : {}),
       updatedAt: new Date(),
     },
   });

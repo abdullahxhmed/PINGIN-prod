@@ -20,8 +20,10 @@ import subscriptionRoutes from "./modules/subscriptions/subscriptions.routes.js"
 import catalogRoutes from "./modules/catalog/catalog.routes.js";
 import inventoryRoutes from "./modules/inventory/inventory.routes.js";
 import orderRoutes from "./modules/orders/orders.routes.js";
+import shippingRoutes from "./modules/shipping/shipping.routes.js";
 import { NotFoundError } from "./errors/AppError.js";
 import { expireStaleReservations } from "./modules/inventory/inventory.services.js";
+import { emailService as mailService } from "./emails/email.service.js";
 dotenv.config();
 const PORT = process.env.PORT || 8080;
 const app = express();
@@ -57,6 +59,7 @@ app.use("/api/subscriptions", subscriptionRoutes);
 app.use("/api/catalog", catalogRoutes);
 app.use("/api/inventory", inventoryRoutes);
 app.use("/api/orders", orderRoutes);
+app.use("/api/shipping", shippingRoutes);
 app.use("/api/admin", adminRoutes);
 // Permanent physical tag scanner redirects (/t/:token and legacy /qr/:token)
 app.get("/t/:token", redirectTagScanController);
@@ -78,5 +81,20 @@ app.listen(PORT, () => {
             logger.error({ err }, "Error expiring stale reservations");
         });
     }, 60_000);
+    // Verify SMTP mail service status on boot
+    mailService.verifyConnection().then((res) => {
+        if (res.ready) {
+            logger.info("Admin email service is active and ready.");
+        }
+        else {
+            logger.warn(`Admin email service not active: ${res.error}`);
+        }
+    });
+    // Periodic stock health check every 30 minutes
+    setInterval(() => {
+        mailService.checkAndAlertLowStock({ triggeredBy: "Periodic inventory health monitor" }).catch((err) => {
+            logger.error({ err }, "Periodic stock check failed");
+        });
+    }, 30 * 60_000);
 });
 //# sourceMappingURL=server.js.map

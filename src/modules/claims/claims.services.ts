@@ -4,6 +4,7 @@ import { prisma } from "../../lib/prisma.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../errors/AppError.js";
 import { activateUserPlusSubscription } from "../subscriptions/subscriptions.services.js";
 import type { RequestClaimOtpInput, VerifyClaimOtpInput } from "./claims.types.js";
+import { decryptPhoneNumber, generatePhoneLookup } from "../../utils/data-protection.js";
 
 const hashOtp = (otp: string): string => {
   return crypto.createHash("sha256").update(otp.trim()).digest("hex");
@@ -56,7 +57,7 @@ export const requestPurchaseClaimOtp = async (
       throw new BadRequestError("This order does not have an email address on record. Try phone verification.");
     }
   } else {
-    destinationContact = order.customerPhone;
+    destinationContact = order.customerPhone ? decryptPhoneNumber(order.customerPhone) : null;
     if (!destinationContact) {
       throw new BadRequestError("This order does not have a phone number on record. Try email verification.");
     }
@@ -67,9 +68,13 @@ export const requestPurchaseClaimOtp = async (
   const otpHash = hashOtp(rawOtp);
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
+  const storedContact = destinationContact.includes("@")
+    ? destinationContact
+    : generatePhoneLookup(destinationContact);
+
   await prisma.otpVerification.create({
     data: {
-      mobileNumber: destinationContact,
+      mobileNumber: storedContact,
       otpHash,
       purpose: OtpPurpose.CLAIM_PURCHASE,
       expiresAt,
@@ -127,7 +132,14 @@ export const verifyAndClaimPurchase = async (
     }
 
     // 2. Validate OTP against contacts on the order
-    const validContacts = [order.customerEmail, order.customerPhone].filter(Boolean) as string[];
+    const rawCustomerPhone = order.customerPhone ? decryptPhoneNumber(order.customerPhone) : null;
+    const phoneLookup = rawCustomerPhone ? generatePhoneLookup(rawCustomerPhone) : null;
+    const validContacts = [
+      order.customerEmail,
+      rawCustomerPhone,
+      phoneLookup,
+      order.customerPhone,
+    ].filter(Boolean) as string[];
 
     const otpRecord = await tx.otpVerification.findFirst({
       where: {
@@ -157,7 +169,8 @@ export const verifyAndClaimPurchase = async (
     });
 
     // 4. Create audit record of purchase claim
-    const verificationMethod = otpRecord.mobileNumber.includes("@") ? "EMAIL_OTP" : "PHONE_OTP";
+    const isPhone = phoneLookup ? otpRecord.mobileNumber === phoneLookup : !otpRecord.mobileNumber.includes("@");
+    const verificationMethod = isPhone ? "PHONE_OTP" : "EMAIL_OTP";
     await tx.purchaseClaim.create({
       data: {
         orderId: order.id,
@@ -206,7 +219,7 @@ export const verifyAndClaimPurchase = async (
         });
 
         if (redeemed.count === 1) {
-          await activateUserPlusSubscription(tx, claimingUserId, grant.plusDurationMonths);
+          await activateUserPlusSubscription(tx, claimingUserId, grant.plusDurationMonths, "included_with_order");
           activatedRetroactively = true;
         }
       }

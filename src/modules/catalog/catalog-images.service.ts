@@ -113,22 +113,33 @@ export async function createCatalogImageUrl(
     };
   }
 
-  const bucket = storage.bucket(bucketName);
-
-  const expiresAt = Date.now() + 60 * 60 * 1000;
-
-  const [url] = await bucket
-    .file(cleanPath)
-    .getSignedUrl({
-      version: "v4",
-      action: "read",
-      expires: expiresAt,
-    });
-
+  // The kauntact_product_images bucket is public: serve clean, non-expiring public URLs
+  const publicUrl = `https://storage.googleapis.com/${bucketName}/${cleanPath}`;
+  const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000;
   return {
-    url,
+    url: publicUrl,
     expiresAt: new Date(expiresAt).toISOString(),
   };
+}
+
+/**
+ * Resolves a permanent public URL for a product image from the public GCS bucket.
+ * Used for email templates, storefronts, and third-party integrations.
+ */
+export function getPublicImageUrl(imageReference: string | null | undefined): string | null {
+  if (!imageReference) return null;
+  const trimmed = imageReference.trim();
+  if (!trimmed) return null;
+
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed;
+  }
+
+  const bucketName = process.env.GCS_BUCKET_NAME || "kauntact_product_images";
+  const cleanPath = normalizeObjectPath(trimmed, bucketName);
+  if (!cleanPath) return null;
+
+  return `https://storage.googleapis.com/${bucketName}/${cleanPath}`;
 }
 
 /**

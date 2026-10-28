@@ -4,13 +4,15 @@ import argon2 from "argon2"
 import { ForbiddenError, BadRequestError } from "../../errors/AppError.js"
 import {OtpPurpose} from "@prisma/client"
 import hanuOtpService from "../../integrations/hanu-otp.service.js"
+import { generatePhoneLookup } from "../../utils/data-protection.js"
 
 
 const requestOtp = async (mobileNumber: string, purpose: OtpPurpose) => {
+    const lookup = generatePhoneLookup(mobileNumber);
     //Invalidate previous OTPs
     await prisma.otpVerification.updateMany({
         where: {
-            mobileNumber,
+            mobileNumber: { in: [lookup, mobileNumber] },
             purpose,
             usedAt: null,
         },
@@ -26,7 +28,7 @@ const requestOtp = async (mobileNumber: string, purpose: OtpPurpose) => {
 
     await prisma.otpVerification.create({
         data: {
-            mobileNumber,
+            mobileNumber: lookup,
             otpHash,
             expiresAt,
             purpose
@@ -41,6 +43,7 @@ const requestOtp = async (mobileNumber: string, purpose: OtpPurpose) => {
 }
 
 const verifyOtp = async (mobileNumber:string, otp:string, purpose: OtpPurpose) => {
+    const lookup = generatePhoneLookup(mobileNumber);
     console.log({
         mobileNumber,
         otp,
@@ -49,7 +52,7 @@ const verifyOtp = async (mobileNumber:string, otp:string, purpose: OtpPurpose) =
 
     const otpRecord = await prisma.otpVerification.findFirst({
         where: {
-            mobileNumber,
+            mobileNumber: { in: [lookup, mobileNumber] },
             purpose,
             usedAt: null,
             expiresAt: {

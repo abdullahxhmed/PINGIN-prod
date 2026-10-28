@@ -3,7 +3,7 @@ import { randomBytes } from "crypto";
 import { ForbiddenError, InternalError, NotFoundError } from "../../errors/AppError.js";
 import { prisma } from "../../lib/prisma.js";
 import { buildContactUrl } from "../public-contact/contact.services.js";
-import { decryptPhoneNumber } from "../../utils/phone-encryption.js";
+import { decryptPhoneNumber, encryptData, decryptData } from "../../utils/data-protection.js";
 import { getUserSubscription } from "../subscriptions/subscriptions.services.js";
 
 type vehicleDetailsInput = {
@@ -47,7 +47,7 @@ const createResource = async (userId:string,name: string, type: ResourceType, ve
             const resource = await tx.resource.create({
                 data: {
                     userId,
-                    name,
+                    name: encryptData(name),
                     type
                 }
             });
@@ -63,7 +63,7 @@ const createResource = async (userId:string,name: string, type: ResourceType, ve
                 vehicle = await tx.vehicleDetail.create({
                     data: {
                         resourceId: resource.id,
-                        registrationNum: vehicleDetails.registrationNum ?? null,
+                        registrationNum: vehicleDetails.registrationNum ? encryptData(vehicleDetails.registrationNum) : null,
                         vehicleColour: vehicleDetails.vehicleColour ?? null,
                     }
                 });
@@ -72,7 +72,11 @@ const createResource = async (userId:string,name: string, type: ResourceType, ve
         })
             
         const contactUrl = buildContactUrl(contactLink.token);
-        return {resource, contactUrl, vehicle};
+        return {
+            resource: { ...resource, name },
+            contactUrl,
+            vehicle: vehicle ? { ...vehicle, registrationNum: vehicleDetails?.registrationNum ?? null } : null,
+        };
 
     }
     catch(err){
@@ -132,7 +136,7 @@ const getResources = async (userId:string) => {
 
         return {
             id: resource.id,
-            name: resource.name,
+            name: decryptData(resource.name),
             type: resource.type,
             contactUrl: resource.contactLink ? buildContactUrl(resource.contactLink.token) : null,
             tagNumber: activeTag?.tagNumber ?? null,
@@ -144,7 +148,7 @@ const getResources = async (userId:string) => {
                 assignedAt: activeTag.assignedAt,
             } : null,
             vehicleDetails:{
-                registrationNum: resource.vehicleDetail?.registrationNum ?? null,
+                registrationNum: resource.vehicleDetail?.registrationNum ? decryptData(resource.vehicleDetail.registrationNum) : null,
                 vehicleColour: resource.vehicleDetail?.vehicleColour ?? null,
             },
             recentCalls,
@@ -214,7 +218,7 @@ const getResourceById = async (resourceId: string, userId: string) => {
 
     return {
         id: resource.id,
-        name: resource.name,
+        name: decryptData(resource.name),
         type: resource.type,
         contactUrl: resource.contactLink ? buildContactUrl(resource.contactLink.token) : null,
         tagNumber: activeTag?.tagNumber ?? null,
@@ -226,7 +230,7 @@ const getResourceById = async (resourceId: string, userId: string) => {
             assignedAt: activeTag.assignedAt,
         } : null,
         vehicleDetails:{
-            registrationNum: resource.vehicleDetail?.registrationNum ?? null,
+            registrationNum: resource.vehicleDetail?.registrationNum ? decryptData(resource.vehicleDetail.registrationNum) : null,
             vehicleColour: resource.vehicleDetail?.vehicleColour ?? null,
         },
         recentCalls,
@@ -243,12 +247,12 @@ const modifyResourceById = async (resourceId : string, userId: string, updateVal
             active: true
         },
         data:{
-            name : updateVal
+            name : encryptData(updateVal)
         }
     })
     return {
         id: updatedResource.id,
-        name: updatedResource.name
+        name: updateVal
     };
 }
 
@@ -386,7 +390,7 @@ const getResourceCalls = async (resourceId: string, userId: string, page = 1, li
 
     return {
         resourceId: resource.id,
-        resourceName: resource.name,
+        resourceName: decryptData(resource.name),
         page,
         limit,
         total,
@@ -490,7 +494,7 @@ const getResourceAnalytics = async (resourceId: string, userId: string) => {
 
   return {
     resourceId: resource.id,
-    resourceName: resource.name,
+    resourceName: decryptData(resource.name),
     summary: {
       totalVisits,
       qrScans,

@@ -2,6 +2,7 @@ import { Prisma, PrintBatchStatus, QrTagOrigin, QrTagStatus, QrTagStockState } f
 import { BadRequestError, NotFoundError } from "../../../errors/AppError.js";
 import { prisma } from "../../../lib/prisma.js";
 import redis from "../../../lib/redis.js";
+import { emailService as mailService } from "../../../emails/email.service.js";
 import { resolveImageUrl } from "../../catalog/catalog-images.service.js";
 import {
   generateOpaqueToken,
@@ -504,7 +505,7 @@ export const adminUpsertBulkStock = async ({
         `Cannot reduce stock below 0. Current on hand: ${existing.quantityOnHand}`
       );
     }
-    return await prisma.inventoryStock.update({
+    const updated = await prisma.inventoryStock.update({
       where: { sku },
       data: {
         name,
@@ -512,13 +513,19 @@ export const adminUpsertBulkStock = async ({
         reorderLevel,
       },
     });
+
+    mailService
+      .checkAndAlertLowStock({ skus: [sku], triggeredBy: "Admin Bulk Stock Adjustment" })
+      .catch(() => {});
+
+    return updated;
   }
 
   if (quantityOnHandDelta < 0) {
     throw new BadRequestError("Initial quantity must be 0 or positive.");
   }
 
-  return await prisma.inventoryStock.create({
+  const created = await prisma.inventoryStock.create({
     data: {
       sku,
       name,
@@ -527,6 +534,12 @@ export const adminUpsertBulkStock = async ({
       reorderLevel,
     },
   });
+
+  mailService
+    .checkAndAlertLowStock({ skus: [sku], triggeredBy: "Admin Bulk Stock Creation" })
+    .catch(() => {});
+
+  return created;
 };
 
 // ---------------------------------------------------------------------------

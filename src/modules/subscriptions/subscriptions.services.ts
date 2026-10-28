@@ -14,6 +14,7 @@ import {
   PLAN_CONFIGS,
   type VerifySubscriptionPaymentInput,
 } from "./subscriptions.types.js";
+import { decryptPhoneNumber } from "../../utils/data-protection.js";
 
 /**
  * Returns user's active subscription, automatically creating default BASIC plan if none exists,
@@ -311,7 +312,7 @@ export const createPackPurchase = async (
     keyId: razorpayOrder ? razorpayClient.getKeyId() : null,
     prefill: {
       name: user.name,
-      contact: user.mobileNumber,
+      contact: decryptPhoneNumber(user.mobileNumber),
     },
   };
 };
@@ -400,7 +401,7 @@ export const verifySubscriptionPayment = async (
       },
     });
 
-    const updatedSub = await activateUserPlusSubscription(tx, userId, durationMonths);
+    const updatedSub = await activateUserPlusSubscription(tx, userId, durationMonths, "paid");
 
     return { purchase: updatedPurchase, subscription: updatedSub };
   });
@@ -468,7 +469,7 @@ export const reconcileCapturedSubscriptionPayment = async (input: {
       },
     });
 
-    await activateUserPlusSubscription(tx, purchase.userId, durationMonths);
+    await activateUserPlusSubscription(tx, purchase.userId, durationMonths, "paid");
   });
 };
 
@@ -664,7 +665,8 @@ export const getUserPurchases = async (userId: string) => {
 export const activateUserPlusSubscription = async (
   tx: Prisma.TransactionClient,
   userId: string,
-  durationMonths: number
+  durationMonths: number,
+  source: string = "included_with_order"
 ) => {
   const now = new Date();
   const currentSub = await tx.subscription.findUnique({
@@ -696,6 +698,7 @@ export const activateUserPlusSubscription = async (
       hasAnalytics: plusConfig.hasAnalytics,
       startsAt: now,
       expiresAt: newExpiresAt,
+      source,
     },
     update: {
       tier: SubscriptionTier.PLUS,
@@ -703,6 +706,7 @@ export const activateUserPlusSubscription = async (
       hasWhatsappAlerts: plusConfig.hasWhatsappAlerts,
       hasAnalytics: plusConfig.hasAnalytics,
       expiresAt: newExpiresAt,
+      source,
     },
   });
 

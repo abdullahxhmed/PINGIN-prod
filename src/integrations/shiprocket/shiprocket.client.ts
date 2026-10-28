@@ -48,6 +48,35 @@ export interface NormalizedTrackingData {
   activities: ShiprocketTrackingActivity[];
 }
 
+export interface ShiprocketServiceabilityInput {
+  pickupPostcode: string;
+  deliveryPostcode: string;
+  weightKg: number;
+  cod: boolean;
+  lengthCm?: number | undefined;
+  breadthCm?: number | undefined;
+  heightCm?: number | undefined;
+  declaredValue?: number | undefined;
+}
+
+export interface ShiprocketAvailableCourier {
+  courierCompanyId: number;
+  courierName: string;
+  rate: number; // in Rupees
+  cod: number;
+  codCharges?: number | undefined;
+  estimatedDeliveryDays?: string | undefined;
+  etd?: string | null | undefined;
+  rating?: number | undefined;
+}
+
+export interface ShiprocketServiceabilityResult {
+  isServiceable: boolean;
+  availableCouriers: ShiprocketAvailableCourier[];
+  cheapestCourier?: ShiprocketAvailableCourier | undefined;
+  rawResponse?: any;
+}
+
 export class ShiprocketClient {
   private baseUrl: string;
   private email?: string | undefined;
@@ -117,14 +146,20 @@ export class ShiprocketClient {
 
   /**
    * Creates a custom order in Shiprocket.
+   * STRICT SAFETY GUARD: Live shipment order creation is blocked unless SHIPROCKET_ENABLE_LIVE_ORDERS is explicitly "true".
    */
   public async createOrder(input: ShiprocketCreateOrderInput): Promise<{
     orderId: string;
     shipmentId: string;
   }> {
+    if (process.env.SHIPROCKET_ENABLE_LIVE_ORDERS !== "true") {
+      const simOrderId = `SIM-SR-${Date.now()}`;
+      const simShipmentId = `SIM-SHP-${Date.now()}`;
+      return { orderId: simOrderId, shipmentId: simShipmentId };
+    }
+
     const token = await this.getToken();
     if (!token) {
-      // Return simulated order ID when credentials are not configured
       const simOrderId = `SIM-SR-${Date.now()}`;
       const simShipmentId = `SIM-SHP-${Date.now()}`;
       return { orderId: simOrderId, shipmentId: simShipmentId };
@@ -153,11 +188,20 @@ export class ShiprocketClient {
 
   /**
    * Assigns AWB code to an existing shipment in Shiprocket.
+   * STRICT SAFETY GUARD: Live AWB booking is blocked unless SHIPROCKET_ENABLE_LIVE_ORDERS is explicitly "true".
    */
   public async assignAwb(shipmentId: string): Promise<{
     awbCode: string;
     courierName: string;
   }> {
+    if (process.env.SHIPROCKET_ENABLE_LIVE_ORDERS !== "true") {
+      const simAwb = `AWB${Date.now().toString().slice(-9)}`;
+      return {
+        awbCode: simAwb,
+        courierName: "Delhivery (Simulated)",
+      };
+    }
+
     const token = await this.getToken();
     if (!token) {
       const simAwb = `AWB${Date.now().toString().slice(-9)}`;
@@ -333,6 +377,197 @@ export class ShiprocketClient {
       trackUrl: `https://shiprocket.co/tracking/${awbCode}`,
       activities: activities.reverse(), // most recent first
     };
+  }
+
+  /**
+   * Checks courier serviceability and shipping rates from Shiprocket.
+   */
+  public async getCourierServiceability(
+    input: ShiprocketServiceabilityInput
+  ): Promise<ShiprocketServiceabilityResult> {
+    const cacheKey = `shiprocket:rates:${input.pickupPostcode}:${input.deliveryPostcode}:${input.weightKg.toFixed(2)}:${input.cod ? 1 : 0}:${Math.round(input.lengthCm || 0)}x${Math.round(input.breadthCm || 0)}x${Math.round(input.heightCm || 0)}`;
+
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        return JSON.parse(cached) as ShiprocketServiceabilityResult;
+      }
+    } catch (err) {
+      console.warn("Failed to read Shiprocket rate cache from Redis:", err);
+    }
+
+    const token = await this.getToken();
+
+    if (!token) {
+      // Realistic simulated fallback for environments without credentials
+      const isPincodeValid = /^[1-9][0-9]{5}$/.test(input.deliveryPostcode);
+      if (!isPincodeValid || input.deliveryPostcode === "999999") {
+        return {
+          isServiceable: false,
+          availableCouriers: [],
+        };
+      }
+
+      const simulatedCouriers: ShiprocketAvailableCourier[] = [
+        {
+          courierCompanyId: 3,
+          courierName: "Delhivery Surface",
+          rate: 49.0,
+          cod: 1,
+          codCharges: 25.0,
+          estimatedDeliveryDays: "3-4 days",
+          etd: new Date(Date.now() + 3 * 24 * 3600 * 1000).toISOString().split("T")[0],
+          rating: 4.2,
+        },
+        {
+          courierCompanyId: 1,
+          courierName: "Blue Dart Air",
+          rate: 79.0,
+          cod: 1,
+          codCharges: 30.0,
+          estimatedDeliveryDays: "1-2 days",
+          etd: new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString().split("T")[0],
+          rating: 4.7,
+        },
+      ];
+
+      const result: ShiprocketServiceabilityResult = {
+        isServiceable: true,
+        availableCouriers: simulatedCouriers,
+        cheapestCourier: simulatedCouriers[0],
+      };
+
+      try {
+        await redis.set(cacheKey, JSON.stringify(result), "EX", 900); // 15 mins cache
+      } catch (err) {
+        console.warn("Failed to cache Shiprocket rates in Redis:", err);
+      }
+
+      return result;
+    }
+
+    const queryParams = new URLSearchParams({
+      pickup_postcode: input.pickupPostcode,
+      delivery_postcode: input.deliveryPostcode,
+      weight: String(Math.max(0.01, input.weightKg)),
+      cod: input.cod ? "1" : "0",
+    });
+
+    if (input.lengthCm) queryParams.set("length", String(Math.max(1, Math.round(input.lengthCm))));
+    if (input.breadthCm) queryParams.set("breadth", String(Math.max(1, Math.round(input.breadthCm))));
+    if (input.heightCm) queryParams.set("height", String(Math.max(1, Math.round(input.heightCm))));
+    if (input.declaredValue) queryParams.set("declared_value", String(Math.round(input.declaredValue)));
+
+    const surfaceParams = new URLSearchParams(queryParams);
+    surfaceParams.set("mode", "surface");
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+    try {
+      // Query both standard (all modes) and explicit surface mode concurrently to guarantee surface couriers are never suppressed
+      const [resAll, resSurface] = await Promise.allSettled([
+        fetch(`${this.baseUrl}/courier/serviceability/?${queryParams.toString()}`, {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          signal: controller.signal,
+        }),
+        fetch(`${this.baseUrl}/courier/serviceability/?${surfaceParams.toString()}`, {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          signal: controller.signal,
+        }),
+      ]);
+
+      clearTimeout(timeoutId);
+
+      const rawCouriersMap = new Map<number, any>();
+
+      if (resAll.status === "fulfilled" && resAll.value.ok) {
+        const body = (await resAll.value.json()) as any;
+        const list = body?.data?.available_courier_companies;
+        if (Array.isArray(list)) {
+          for (const c of list) {
+            if (c?.courier_company_id) rawCouriersMap.set(Number(c.courier_company_id), c);
+          }
+        }
+      }
+
+      if (resSurface.status === "fulfilled" && resSurface.value.ok) {
+        const body = (await resSurface.value.json()) as any;
+        const list = body?.data?.available_courier_companies;
+        if (Array.isArray(list)) {
+          for (const c of list) {
+            if (c?.courier_company_id && !rawCouriersMap.has(Number(c.courier_company_id))) {
+              rawCouriersMap.set(Number(c.courier_company_id), c);
+            }
+          }
+        }
+      }
+
+      const rawCouriers = Array.from(rawCouriersMap.values());
+
+      if (rawCouriers.length === 0) {
+        return {
+          isServiceable: false,
+          availableCouriers: [],
+        };
+      }
+
+      const parsedCouriers: ShiprocketAvailableCourier[] = rawCouriers
+        .filter((c: any) => {
+          if (!c || typeof c.rate !== "number" || c.rate <= 0) return false;
+          if (input.cod && c.cod !== 1) return false;
+          return true;
+        })
+        .map((c: any) => ({
+          courierCompanyId: Number(c.courier_company_id),
+          courierName: String(c.courier_name || "Express Courier"),
+          rate: Number(c.rate),
+          cod: Number(c.cod || 0),
+          codCharges: c.cod_charges !== undefined ? Number(c.cod_charges) : undefined,
+          estimatedDeliveryDays: c.estimated_delivery_days ? String(c.estimated_delivery_days) : undefined,
+          etd: c.etd ? String(c.etd) : null,
+          rating: c.rating !== undefined ? Number(c.rating) : undefined,
+        }));
+
+      if (parsedCouriers.length === 0) {
+        return {
+          isServiceable: false,
+          availableCouriers: [],
+        };
+      }
+
+      // Sort by rate ascending to reliably pick the cheapest courier
+      parsedCouriers.sort((a, b) => a.rate - b.rate);
+
+      const result: ShiprocketServiceabilityResult = {
+        isServiceable: true,
+        availableCouriers: parsedCouriers,
+        cheapestCourier: parsedCouriers[0],
+      };
+
+      try {
+        await redis.set(cacheKey, JSON.stringify(result), "EX", 900); // 15 mins cache
+      } catch (err) {
+        console.warn("Failed to cache Shiprocket rates in Redis:", err);
+      }
+
+      return result;
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      console.error("Shiprocket courier serviceability request failed:", err?.message || err);
+      return {
+        isServiceable: false,
+        availableCouriers: [],
+      };
+    }
   }
 }
 

@@ -5,14 +5,21 @@ import { createAccessToken, generateRefreshToken } from "../auth.services.js"
 import { otpService } from "../otp.service.js"
 import argon2 from "argon2"
 import { checkOtpRateLimit } from "../../../middleware/otp-rateLimiter.js"
-
+import {
+  decryptPhoneNumber,
+  generatePhoneLookup,
+  getPossibleUserMobileMatches,
+} from "../../../utils/data-protection.js"
 
 const requestLoginOtp = async (mobileNo:string, ip:string) => {
-    
     await checkOtpRateLimit(mobileNo,ip);
-    const user = await prisma.user.findUnique({
+    const lookup = generatePhoneLookup(mobileNo);
+    const user = await prisma.user.findFirst({
         where: {
-            mobileNumber: mobileNo
+            OR: [
+                { mobileLookup: lookup },
+                { mobileNumber: { in: getPossibleUserMobileMatches(mobileNo) } },
+            ],
         }
     });
     if(!user){
@@ -22,15 +29,24 @@ const requestLoginOtp = async (mobileNo:string, ip:string) => {
         mobileNo,
         OtpPurpose.LOGIN
     )
-
 }
 
-
 const verifyLoginOtp = async (mobileNo: string, otp: string) => {
-    //check whether user exists or not
-     const user = await prisma.user.findUnique({
+    // Prove that this phone number passed login OTP verification
+    await otpService.verifyOtp(
+        mobileNo,
+        otp,
+        OtpPurpose.LOGIN
+    );
+
+    // check whether user exists or not
+    const lookup = generatePhoneLookup(mobileNo);
+    const user = await prisma.user.findFirst({
         where: {
-            mobileNumber: mobileNo,
+            OR: [
+                { mobileLookup: lookup },
+                { mobileNumber: { in: getPossibleUserMobileMatches(mobileNo) } },
+            ],
             active: true
         },
         select: {
@@ -44,38 +60,31 @@ const verifyLoginOtp = async (mobileNo: string, otp: string) => {
         throw new NotFoundError("Signup before logging in");
     }
 
-    // Prove that this phone number passed login OTP verification
-    await otpService.verifyOtp(
-        mobileNo,
-        otp,
-        OtpPurpose.LOGIN
-    );
-
-    // OTP verfication succeeded if we reached here
-
-
     const accessToken = createAccessToken(user.id);
     const refreshToken = await generateRefreshToken(user.id);
     return {
         user: {
             id: user.id,
             name: user.name,
-            mobileNumber: user.mobileNumber,
+            mobileNumber: decryptPhoneNumber(user.mobileNumber),
             role: user.role,
         },
         accessToken: accessToken,
         refreshToken: refreshToken
     }
-
 }
 
 const verifyLoginPassword = async (
   mobileNo: string,
   password: string
 ) => {
-  const user = await prisma.user.findUnique({
+  const lookup = generatePhoneLookup(mobileNo);
+  const user = await prisma.user.findFirst({
     where: {
-      mobileNumber: mobileNo,
+      OR: [
+        { mobileLookup: lookup },
+        { mobileNumber: { in: getPossibleUserMobileMatches(mobileNo) } },
+      ],
       active: true,
     },
     select: {
@@ -107,7 +116,7 @@ const verifyLoginPassword = async (
     user: {
       id: user.id,
       name: user.name,
-      mobileNumber: user.mobileNumber,
+      mobileNumber: decryptPhoneNumber(user.mobileNumber),
       role: user.role,
     },
     accessToken,

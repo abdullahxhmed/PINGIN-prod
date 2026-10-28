@@ -1,5 +1,6 @@
 import { NotFoundError } from "../../errors/AppError.js";
 import { prisma } from "../../lib/prisma.js";
+import { encryptData, decryptData } from "../../utils/data-protection.js";
 
 
 const addVehicleDetails = async (
@@ -19,11 +20,14 @@ const addVehicleDetails = async (
     const vehicleDetails = await prisma.vehicleDetail.create({
         data: {
             resourceId : resource.id,
-            registrationNum: registrationNum,
+            registrationNum: registrationNum ? encryptData(registrationNum) : null,
             vehicleColour: vehicleColour
         }
     })
-    return vehicleDetails;
+    return {
+        ...vehicleDetails,
+        registrationNum: registrationNum || null,
+    };
 }
 
 export {
