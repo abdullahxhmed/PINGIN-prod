@@ -1,7 +1,6 @@
 import express from "express";
 import {
   createUserController,
-  getUsersController,
   updateUserNameController,
   changePasswordController,
 } from "./users.controller.js";
@@ -9,7 +8,7 @@ import { authenticateRequest } from "../auth/auth.middleware.js";
 
 const router = express.Router();
 
-router.route("/").post(createUserController).get(getUsersController);
+router.route("/").post(createUserController);
 
 // Update user details (name only)
 router

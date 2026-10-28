@@ -67,6 +67,7 @@ const refreshAccessToken = async (refreshToken:string) => {
 }
 
 import { getUserSubscription } from "../subscriptions/subscriptions.services.js";
+import { decryptPhoneNumber } from "../../utils/data-protection.js";
 
 const getCurrentUser = async (userId: string) => {
     const user = await prisma.user.findUnique({
@@ -94,6 +95,13 @@ const getCurrentUser = async (userId: string) => {
 
     return {
         ...user,
+        mobileNumber: decryptPhoneNumber(user.mobileNumber),
+        contactEndpoint: user.contactEndpoint
+            ? {
+                ...user.contactEndpoint,
+                phoneNumber: decryptPhoneNumber(user.contactEndpoint.phoneNumber),
+            }
+            : null,
         subscription: subData.subscription,
         tagQuota: {
             activeCount: subData.tags.activeCount,

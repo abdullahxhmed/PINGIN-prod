@@ -4,7 +4,7 @@ import { createCommunicationSession, getCommunicationContact } from "../public-c
 import { edesyService } from "../../integrations/edesy.service.js";
 import { InternalError, NotFoundError } from "../../errors/AppError.js"
 import { checkCallRateLimit } from "../../middleware/call-rateLimiter.js";
-import { encryptPhoneNumber } from "../../utils/phone-encryption.js";
+import { encryptPhoneNumber, decryptPhoneNumber, isEncrypted } from "../../utils/data-protection.js";
 
 
 interface InitiateCallInput {
@@ -26,29 +26,38 @@ const initiateCall = async ({
         contact.contactLinkId,
         ip
     );
+
+    // Edesy will not accept encrypted numbers; ensure both sides are plaintext
+    const plainVisitorPhone = isEncrypted(visitorPhoneNumber)
+      ? decryptPhoneNumber(visitorPhoneNumber)
+      : visitorPhoneNumber.trim();
+
+    const plainOwnerPhone = isEncrypted(contact.contactEndpointPhoneNumber)
+      ? decryptPhoneNumber(contact.contactEndpointPhoneNumber)
+      : contact.contactEndpointPhoneNumber.trim();
+
     // 1. Create the ParkPing communication session
     const session = await createCommunicationSession(
         token,
         CommunicationSessionType.CALL,
-        visitorPhoneNumber,
+        plainVisitorPhone,
         visitId,
     );
 
-
-  // 3. Ask Edesy to initiate the call
+  // 3. Ask Edesy to initiate the call with plaintext numbers
   const edesyCall = await edesyService.initiateCall(
-    visitorPhoneNumber,
-    contact.contactEndpointPhoneNumber,
+    plainVisitorPhone,
+    plainOwnerPhone,
     session.reference
   );
 
-  // 4. Store the actual provider call
+  // 4. Store the actual provider call encrypted at rest
   const communicationCall = await prisma.communicationCall.create({
     data: {
       sessionId: session.id,
       callSid: edesyCall.callSid,
-      caller: encryptPhoneNumber(visitorPhoneNumber),
-      callee: encryptPhoneNumber(contact.contactEndpointPhoneNumber),
+      caller: encryptPhoneNumber(plainVisitorPhone),
+      callee: encryptPhoneNumber(plainOwnerPhone),
       direction: "click_to_call",
       status: "INITIATED",
       providerStatus: edesyCall.providerStatus,

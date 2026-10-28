@@ -3,7 +3,7 @@ import {prisma} from "../../lib/prisma.js"
 import {CommunicationSessionType} from "@prisma/client";
 import crypto from "crypto"
 import { edesyService } from "../../integrations/edesy.service.js";
-import { encryptPhoneNumber, decryptPhoneNumber, decryptData } from "../../utils/data-protection.js";
+import { encryptPhoneNumber, decryptPhoneNumber, decryptData, isEncrypted, generatePhoneLookup } from "../../utils/data-protection.js";
 
 const getContact = async (contactToken: string) => {
     const contactDetails = await prisma.contactLink.findUnique({
@@ -59,13 +59,17 @@ const createCommunicationSession = async (
     try{
         const contact = await getCommunicationContact(token);
 
+        const plainVisitor = isEncrypted(visitorPhoneNumber)
+            ? decryptPhoneNumber(visitorPhoneNumber)
+            : visitorPhoneNumber.trim();
+
     const session = await prisma.communicationSession.create({
         data: {
             reference: generateReference(),
             resourceId: contact.resourceId,
             contactLinkId: contact.contactLinkId,
             contactEndpointId: contact.contactEndpointId,
-            contactorPhoneNumber: encryptPhoneNumber(visitorPhoneNumber),
+            contactorPhoneNumber: encryptPhoneNumber(plainVisitor),
             type,
             status: "PENDING",
             visitId: visitId || null,
@@ -102,6 +106,8 @@ const getCommunicationContact = async (token: string) => {
                 select: {
                     user: {
                         select: {
+                            id: true,
+                            mobileNumber: true,
                             contactEndpoint: {
                                 select: {
                                     id: true,
@@ -120,20 +126,47 @@ const getCommunicationContact = async (token: string) => {
         throw new NotFoundError("Contact link not found");
     }
 
-    const contactEndpoint =
-        contactLink.resource.user.contactEndpoint;
+    const user = contactLink.resource.user;
+    let contactEndpoint = user?.contactEndpoint;
 
-    if (!contactEndpoint) {
+    // Resilient fallback: If contactEndpoint row is missing, check user's mobileNumber
+    const rawOwnerPhone =
+        contactEndpoint?.phoneEncrypted ||
+        contactEndpoint?.phoneNumber ||
+        user?.mobileNumber;
+
+    if (!rawOwnerPhone) {
         throw new InternalError(
             "Contact endpoint not configured"
         );
     }
 
+    const decryptedOwnerPhone = decryptPhoneNumber(rawOwnerPhone);
+
+    // If contactEndpoint record was missing for this user, auto-create it now
+    let contactEndpointId = contactEndpoint?.id;
+    if (!contactEndpointId && user?.id) {
+        const createdEp = await prisma.contactEndpoint.create({
+            data: {
+                userId: user.id,
+                type: "PHONE",
+                phoneNumber: isEncrypted(rawOwnerPhone) ? rawOwnerPhone : encryptPhoneNumber(rawOwnerPhone),
+                phoneEncrypted: isEncrypted(rawOwnerPhone) ? rawOwnerPhone : encryptPhoneNumber(rawOwnerPhone),
+                phoneLookup: generatePhoneLookup(decryptedOwnerPhone),
+            },
+        });
+        contactEndpointId = createdEp.id;
+    }
+
+    if (!contactEndpointId) {
+        throw new InternalError("Could not resolve contact endpoint ID");
+    }
+
     return {
         contactLinkId: contactLink.id,
         resourceId: contactLink.resourceId,
-        contactEndpointId: contactEndpoint.id,
-        contactEndpointPhoneNumber: decryptPhoneNumber(contactEndpoint.phoneEncrypted || contactEndpoint.phoneNumber),
+        contactEndpointId,
+        contactEndpointPhoneNumber: decryptedOwnerPhone,
     };
 };
 
@@ -167,7 +200,12 @@ const verifyRegistrationNum = async (token:string, submittedRegNo: string) => {
 
     if(!existingRegNo)
         throw new NotFoundError("registrationNum not found");
-    else if(existingRegNo !== submittedRegNo){
+
+    const plainRegNo = decryptData(existingRegNo);
+    const cleanExisting = plainRegNo.replace(/[\s\-]/g, "").toUpperCase();
+    const cleanSubmitted = submittedRegNo.replace(/[\s\-]/g, "").toUpperCase();
+
+    if (cleanExisting !== cleanSubmitted) {
         throw new ForbiddenError("Registration number does not match");
     }
     return true;

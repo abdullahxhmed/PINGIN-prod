@@ -1,7 +1,6 @@
 import asyncHandler from "express-async-handler";
 import {
   createUser,
-  getUsers,
   updateUserName,
   changeUserPassword,
 } from "./users.service.js";
@@ -20,16 +19,6 @@ const createUserController = asyncHandler(async (req, res, next) => {
   console.log(req.body);
   const user = await createUser(req.body.name, req.body.mobileNumber);
   res.status(201).json(user);
-});
-
-/**
- * @description Get all users
- * @route GET /api/users
- * @access public
- */
-const getUsersController = asyncHandler(async (req, res, next) => {
-  const users = await getUsers();
-  res.status(200).json(users);
 });
 
 /**
@@ -78,7 +67,6 @@ const changePasswordController = asyncHandler(async (req, res, next) => {
 
 export {
   createUserController,
-  getUsersController,
   updateUserNameController,
   changePasswordController,
 };

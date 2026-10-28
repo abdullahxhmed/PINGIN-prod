@@ -25,14 +25,6 @@ const createUser = async (name: string, mobileNumber: string) => {
   };
 };
 
-const getUsers = async () => {
-  const users = await prisma.user.findMany();
-  return users.map((u) => ({
-    ...u,
-    mobileNumber: decryptPhoneNumber(u.mobileNumber),
-  }));
-};
-
 const updateUserName = async (userId: string, name: string) => {
   const existingUser = await prisma.user.findUnique({
     where: { id: userId, active: true },
@@ -66,6 +58,12 @@ const updateUserName = async (userId: string, name: string) => {
   return {
     ...updatedUser,
     mobileNumber: decryptPhoneNumber(updatedUser.mobileNumber),
+    contactEndpoint: updatedUser.contactEndpoint
+      ? {
+          ...updatedUser.contactEndpoint,
+          phoneNumber: decryptPhoneNumber(updatedUser.contactEndpoint.phoneNumber),
+        }
+      : null,
   };
 };
 
@@ -112,7 +110,6 @@ const changeUserPassword = async (
 
 export {
   createUser,
-  getUsers,
   updateUserName,
   changeUserPassword,
 };

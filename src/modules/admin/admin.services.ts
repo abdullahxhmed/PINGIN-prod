@@ -538,7 +538,7 @@ export const adminDashboardSummary = async () => {
       type: s.type,
       status: s.calls[0]?.status ?? s.status,
       createdAt: s.createdAt,
-      resourceName: s.resource.name,
+      resourceName: s.resource.name ? decryptData(s.resource.name) : "",
       ownerName: s.resource.user.name,
     })),
   };

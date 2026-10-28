@@ -9,6 +9,7 @@ interface EdesyInitiateCallResponse {
 }
 
 import { AppError } from "../errors/AppError.js";
+import { isEncrypted, decryptPhoneNumber } from "../utils/data-protection.js";
 
 export class EdesyApiError extends AppError {
   constructor(
@@ -35,9 +36,38 @@ export class EdesyClient {
     partyB: string,
     reference?: string
   ): Promise<EdesyInitiateCallResponse> {
+    // Edesy will not accept encrypted phone numbers; ensure both parties are decrypted plaintext
+    let cleanPartyA = partyA ? partyA.trim() : "";
+    let cleanPartyB = partyB ? partyB.trim() : "";
+
+    if (isEncrypted(cleanPartyA)) {
+      cleanPartyA = decryptPhoneNumber(cleanPartyA);
+    }
+    if (isEncrypted(cleanPartyB)) {
+      cleanPartyB = decryptPhoneNumber(cleanPartyB);
+    }
+
+    // Strip extraneous punctuation while preserving digits and country code prefix
+    cleanPartyA = cleanPartyA.replace(/[\s\-()]/g, "");
+    cleanPartyB = cleanPartyB.replace(/[\s\-()]/g, "");
+
+    // Fail-safe security check: never dispatch ciphertext to external telephony provider
+    if (isEncrypted(cleanPartyA) || cleanPartyA.includes(":")) {
+      throw new EdesyApiError(
+        "Invalid party_a: Phone number is encrypted and could not be decrypted before provider dispatch",
+        400
+      );
+    }
+    if (isEncrypted(cleanPartyB) || cleanPartyB.includes(":")) {
+      throw new EdesyApiError(
+        "Invalid party_b: Phone number is encrypted and could not be decrypted before provider dispatch",
+        400
+      );
+    }
+
     const payload: Record<string, any> = {
-      party_a: partyA,
-      party_b: partyB,
+      party_a: cleanPartyA,
+      party_b: cleanPartyB,
     };
     if (reference) {
       payload.reference = reference;
