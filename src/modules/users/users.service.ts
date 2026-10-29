@@ -6,6 +6,7 @@ import {
   decryptPhoneNumber,
   generatePhoneLookup,
 } from "../../utils/data-protection.js";
+import { revokeAllUserSessions } from "../auth/session.service.js";
 
 const createUser = async (name: string, mobileNumber: string) => {
   console.time("create-user");
@@ -104,6 +105,9 @@ const changeUserPassword = async (
     where: { id: userId },
     data: { passwordHash: newPasswordHash },
   });
+
+  // Security: Invalidate all existing refresh sessions on password change
+  await revokeAllUserSessions(userId);
 
   return { message: "Password changed successfully" };
 };

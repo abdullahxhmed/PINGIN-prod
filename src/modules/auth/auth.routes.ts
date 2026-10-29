@@ -17,6 +17,10 @@ router
   .post(authControllers.refreshAccessTokenController);
 
 router
+  .route("/logout")
+  .post(authControllers.logoutController);
+
+router
   .route("/me")
   .get(authenticateRequest, authControllers.getMeController)
   .patch(authenticateRequest, updateUserNameController);

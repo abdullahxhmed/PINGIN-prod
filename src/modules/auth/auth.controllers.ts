@@ -1,6 +1,12 @@
 
 import asyncHandler from "express-async-handler";
-import { createAccessToken, getCurrentUser, refreshAccessToken } from "./auth.services.js";
+import {
+  createAccessToken,
+  getCurrentUser,
+  refreshSession,
+  revokeSession,
+  revokeSessionByToken,
+} from "./auth.services.js";
 import { signupService } from "./signup/signup.service.js";
 import { loginService } from "./login/login.service.js";
 import { passwordLoginSchema, verifySignupSchema } from "./auth.schema.js";
@@ -52,9 +58,10 @@ const verifySignupController = asyncHandler (async (req, res, next) =>{
         name
     )
     res.cookie("refreshToken", signupDetails.refreshToken, {
-        httpOnly:true,
-        secure:process.env.NODE_ENV === "production",
-        sameSite:"lax"
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        expires: signupDetails.cookieExpiresAt,
     })
     res.status(201).json({
         user: signupDetails.user,
@@ -87,9 +94,10 @@ const verifyLoginOtpController = asyncHandler (async (req, res, next) =>{
         otp,
     )
     res.cookie("refreshToken", loginDetails.refreshToken, {
-        httpOnly:true,
-        secure:process.env.NODE_ENV === "production",
-        sameSite:"lax"
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        expires: loginDetails.cookieExpiresAt,
     })
     res.status(201).json({
         user: loginDetails.user,
@@ -115,9 +123,10 @@ const verifyLoginPassController = asyncHandler (async (req, res, next) =>{
         password,
     )
     res.cookie("refreshToken", loginDetails.refreshToken, {
-        httpOnly:true,
-        secure:process.env.NODE_ENV === "production",
-        sameSite:"lax"
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        expires: loginDetails.cookieExpiresAt,
     })
     res.status(201).json({
         user: loginDetails.user,
@@ -141,9 +150,39 @@ const refreshAccessTokenController = asyncHandler (async (req,res, next) => {
         return;
     }
 
-    const accessToken = await refreshAccessToken(refreshToken);
-    res.status(200).json({accessToken:accessToken});
+    const result = await refreshSession(refreshToken);
+    res.cookie("refreshToken", result.refreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        expires: result.cookieExpiresAt,
+    });
+    res.status(200).json({
+        accessToken: result.accessToken,
+        refreshToken: result.refreshToken,
+    });
 })
+
+/**
+ * @description Logout / revoke current session
+ * @route POST /api/auth/logout
+ * @access public / private
+ */
+const logoutController = asyncHandler(async (req, res) => {
+    const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+    if (refreshToken) {
+        await revokeSessionByToken(refreshToken);
+    }
+    if (req.user?.sessionId) {
+        await revokeSession(req.user.sessionId);
+    }
+    res.clearCookie("refreshToken", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+    });
+    res.status(200).json({ message: "Logged out successfully" });
+});
 
 
 
@@ -167,6 +206,7 @@ export const authControllers = {
     requestLoginOtpController,
     verifyLoginOtpController,
     refreshAccessTokenController,
+    logoutController,
     getMeController,
     verifyLoginPassController
 };

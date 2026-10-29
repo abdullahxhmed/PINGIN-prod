@@ -3,6 +3,10 @@ import jwt from "jsonwebtoken";
 import { BadRequestError, UnauthorizedError } from "../../errors/AppError.js";
 import { prisma } from "../../lib/prisma.js";
 import redis from "../../lib/redis.js";
+import {
+  validateBackendSession,
+  touchSessionActivity,
+} from "./session.service.js";
 
 
 const authenticateRequest = async (req: Request, res: Response, next: NextFunction) => {
@@ -32,8 +36,19 @@ const authenticateRequest = async (req: Request, res: Response, next: NextFuncti
         ){
             throw new UnauthorizedError("Payload error");
         }
+
+    // Backend session state validation (inactivity and revocation checks)
+    if (payload.sid) {
+      const sessionCheck = await validateBackendSession(payload.sid);
+      if (!sessionCheck.valid) {
+        throw new UnauthorizedError(`Session expired or revoked (${sessionCheck.reason}). Please sign in again.`);
+      }
+      touchSessionActivity(payload.sid);
+    }
+
     req.user = {
-        id: payload.sub
+        id: payload.sub,
+        sessionId: payload.sid,
     }
 
     // Throttled lastSeenAt update in background (at most once every 6 hours per user)

@@ -15,6 +15,8 @@ declare global {
         id: string;
         /** Present after requireAdmin; undefined after authenticateRequest alone */
         role?: UserRole;
+        /** Backing session ID for stateful token validation */
+        sessionId?: string;
       };
     }
   }

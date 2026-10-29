@@ -1,7 +1,7 @@
 import { OtpPurpose } from "@prisma/client"
 import { ConflictError } from "../../../errors/AppError.js"
 import { prisma } from "../../../lib/prisma.js"
-import { createAccessToken, generateRefreshToken } from "../auth.services.js"
+import { createAccessToken, createSession } from "../session.service.js"
 import { otpService } from "../otp.service.js"
 import { checkOtpRateLimit } from "../../../middleware/otp-rateLimiter.js";
 import argon2 from "argon2"
@@ -70,8 +70,8 @@ const verifySignup = async (mobileNo: string,password:string, otp: string, userN
         return { user: newUser, contactEndpoint };
     });
 
-    const accessToken = createAccessToken(user.id);
-    const refreshToken = await generateRefreshToken(user.id);
+    const session = await createSession(user.id, user.role);
+    const accessToken = createAccessToken(user.id, user.role, session.sessionId);
     return {
         user: {
             id: user.id,
@@ -80,7 +80,8 @@ const verifySignup = async (mobileNo: string,password:string, otp: string, userN
             role: user.role,
         },
         accessToken: accessToken,
-        refreshToken: refreshToken,
+        refreshToken: session.rawToken,
+        cookieExpiresAt: session.expiresAt,
     };
 };
 

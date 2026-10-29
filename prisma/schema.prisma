@@ -368,16 +368,19 @@ model OtpVerification {
 }
 
 model RefreshToken {
-  id        String    @id @default(uuid()) @db.Uuid
-  userId    String    @db.Uuid
-  tokenHash String
-  expiresAt DateTime
-  revokedAt DateTime?
-  createdAt DateTime  @default(now())
+  id                String    @id @default(uuid()) @db.Uuid
+  userId            String    @db.Uuid
+  tokenHash         String    @unique
+  expiresAt         DateTime
+  revokedAt         DateTime?
+  lastUsedAt        DateTime  @default(now())
+  absoluteExpiresAt DateTime?
+  createdAt         DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([tokenHash])
 }
 
 model QrTag {

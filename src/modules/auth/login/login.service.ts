@@ -1,7 +1,7 @@
 import { OtpPurpose } from "@prisma/client"
 import { ConflictError, NotFoundError, UnauthorizedError } from "../../../errors/AppError.js"
 import { prisma } from "../../../lib/prisma.js"
-import { createAccessToken, generateRefreshToken } from "../auth.services.js"
+import { createAccessToken, createSession } from "../session.service.js"
 import { otpService } from "../otp.service.js"
 import argon2 from "argon2"
 import { checkOtpRateLimit } from "../../../middleware/otp-rateLimiter.js"
@@ -60,8 +60,8 @@ const verifyLoginOtp = async (mobileNo: string, otp: string) => {
         throw new NotFoundError("Signup before logging in");
     }
 
-    const accessToken = createAccessToken(user.id);
-    const refreshToken = await generateRefreshToken(user.id);
+    const session = await createSession(user.id, user.role);
+    const accessToken = createAccessToken(user.id, user.role, session.sessionId);
     return {
         user: {
             id: user.id,
@@ -70,7 +70,8 @@ const verifyLoginOtp = async (mobileNo: string, otp: string) => {
             role: user.role,
         },
         accessToken: accessToken,
-        refreshToken: refreshToken
+        refreshToken: session.rawToken,
+        cookieExpiresAt: session.expiresAt,
     }
 }
 
@@ -109,8 +110,8 @@ const verifyLoginPassword = async (
     throw new UnauthorizedError("Invalid credentials");
   }
 
-  const accessToken = createAccessToken(user.id);
-  const refreshToken = await generateRefreshToken(user.id);
+  const session = await createSession(user.id, user.role);
+  const accessToken = createAccessToken(user.id, user.role, session.sessionId);
 
   return {
     user: {
@@ -120,7 +121,8 @@ const verifyLoginPassword = async (
       role: user.role,
     },
     accessToken,
-    refreshToken,
+    refreshToken: session.rawToken,
+    cookieExpiresAt: session.expiresAt,
   };
 };
 

@@ -3,6 +3,11 @@ import jwt from "jsonwebtoken";
 import { ForbiddenError, UnauthorizedError } from "../errors/AppError.js";
 import { prisma } from "../lib/prisma.js";
 import { UserRole } from "@prisma/client";
+import {
+  validateBackendSession,
+  hasActiveAdminSession,
+  touchSessionActivity,
+} from "../modules/auth/session.service.js";
 
 /**
  * Middleware that enforces admin-only access.
@@ -51,6 +56,25 @@ export const requireAdmin = async (
     throw new ForbiddenError("Administrative privilege required for this action.");
   }
 
+  // ── Path 2b: Enforce backend session limits (12hr admin policy) ──
+  if (payload.sid) {
+    const sessionCheck = await validateBackendSession(payload.sid, UserRole.ADMIN);
+    if (!sessionCheck.valid) {
+      throw new UnauthorizedError(
+        `Admin session expired or revoked (${sessionCheck.reason}). Please sign in again.`
+      );
+    }
+    touchSessionActivity(payload.sid);
+  } else {
+    // Fallback for legacy tokens: ensure user has an active, unexpired admin session within the 12hr window
+    const hasSession = await hasActiveAdminSession(payload.sub);
+    if (!hasSession) {
+      throw new UnauthorizedError(
+        "Admin session has expired (12-hour limit reached). Please sign in again."
+      );
+    }
+  }
+
   const user = await prisma.user.findUnique({
     where: { id: payload.sub, active: true },
     select: { role: true },
@@ -60,6 +84,6 @@ export const requireAdmin = async (
     throw new ForbiddenError("Administrative privilege required for this action.");
   }
 
-  req.user = { id: payload.sub, role: UserRole.ADMIN };
+  req.user = { id: payload.sub, role: UserRole.ADMIN, sessionId: payload.sid };
   return next();
 };
