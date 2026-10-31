@@ -3,6 +3,7 @@ import { z } from "zod";
 import asyncHandler from "express-async-handler";
 import { BadRequestError } from "../../../errors/AppError.js";
 import { getAdminOverview } from "./admin.overview.services.js";
+import { getAdminTelephonyAnalytics } from "./admin.telephony.services.js";
 import type { OverviewPeriod } from "./admin.overview.types.js";
 
 const overviewQuerySchema = z.object({
@@ -31,4 +32,17 @@ export const adminOverviewController = asyncHandler(async (req: Request, res: Re
     Boolean(parsed.data.includeTest)
   );
   res.status(200).json(overview);
+});
+
+/**
+ * @route   GET /api/admin/overview/telephony?period=today|7d|30d|month|all&provider=EDESY
+ * @desc    Comprehensive admin telephony usage, billing exposure, unit economics & net margins.
+ * @access  Admin
+ */
+export const adminTelephonyOverviewController = asyncHandler(async (req: Request, res: Response) => {
+  const period = typeof req.query.period === "string" ? (req.query.period as any) : "month";
+  const provider = typeof req.query.provider === "string" ? req.query.provider : "EDESY";
+
+  const result = await getAdminTelephonyAnalytics({ period, provider });
+  res.status(200).json(result);
 });

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { Prisma, OrderStatus, ReservationStatus, GrantStatus, PaymentStatus, OutboxStatus, QrTagStockState } from "@prisma/client";
+import { Prisma, OrderStatus, ReservationStatus, GrantStatus, PaymentStatus, OutboxStatus, QrTagStockState, ComponentType } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
 import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError } from "../../errors/AppError.js";
 import { razorpayClient } from "../../integrations/razorpay/razorpay.client.js";
@@ -9,6 +9,7 @@ import type { CheckoutOrderInput, CheckoutResult, ReconcilePaymentInput, VerifyP
 import { logger } from "../../lib/logger.js";
 import { emailService as mailService } from "../../emails/email.service.js";
 import { calculateShippingFeeForOrder } from "../shipping/shipping.services.js";
+import { activateUserPlusSubscription } from "../subscriptions/subscriptions.services.js";
 import {
   encryptData,
   decryptData,
@@ -56,6 +57,52 @@ export const calculatePlusDurationFromOrder = (order: {
     }
   }
   return totalMonths;
+};
+
+export interface ResolvedOrderPlan {
+  planId: string;
+  planCode: string;
+  durationDays: number;
+  durationMonths: number;
+  tagQuota: number;
+}
+
+/**
+ * Resolves the database-backed Plan granted by an order's product components.
+ * Returns null if the order contains no digital entitlement components (e.g. Replacement Kit).
+ */
+export const resolvePlanFromOrder = async (order: {
+  items: Array<{ productSnapshot: any; quantity: number }>;
+}): Promise<ResolvedOrderPlan | null> => {
+  for (const item of order.items) {
+    const snapshot = item.productSnapshot as any;
+    const components = snapshot?.components || [];
+    for (const comp of components) {
+      if (
+        (comp.componentType === ComponentType.DIGITAL_ENTITLEMENT ||
+          comp.componentType === "DIGITAL_ENTITLEMENT") &&
+        (comp.planId || (comp.plusDurationMonths && comp.plusDurationMonths > 0))
+      ) {
+        let plan = null;
+        if (comp.planId) {
+          plan = await prisma.plan.findUnique({ where: { id: comp.planId } });
+        }
+        if (!plan) {
+          plan = await prisma.plan.findUnique({ where: { code: "STARTER" } });
+        }
+        if (plan) {
+          return {
+            planId: plan.id,
+            planCode: plan.code,
+            durationDays: plan.durationDays,
+            durationMonths: Math.round(plan.durationDays / 30),
+            tagQuota: plan.tagQuota,
+          };
+        }
+      }
+    }
+  }
+  return null;
 };
 
 /**
@@ -185,6 +232,7 @@ export const createOrderFromCheckout = async (
         quantity: c.quantity,
         plusDurationMonths: c.plusDurationMonths,
         inventorySku: c.inventorySku,
+        planId: (c as any).planId ?? null,
       })),
     };
 
@@ -442,20 +490,38 @@ export const reconcileCapturedPayment = async (input: ReconcilePaymentInput): Pr
       // The order is marked PAID and placed in the warehouse packing queue.
       // Warehouse workers scan physical tags to allocate them during the PackingSession.
 
-      // Create at most one SubscriptionGrant per qualifying order
-      const plusDurationMonths = calculatePlusDurationFromOrder(order);
-      if (plusDurationMonths > 0) {
-        await tx.subscriptionGrant.upsert({
+      // Resolve plan from order components.
+      // Physical fulfillment / warehouse delays must NOT delay subscription service activation!
+      const resolvedPlan = await resolvePlanFromOrder(order);
+      if (resolvedPlan) {
+        const shouldActivateImmediately = Boolean(order.userId);
+        const existingGrant = await tx.subscriptionGrant.findUnique({
           where: { orderId: order.id },
-          create: {
-            orderId: order.id,
-            userId: order.userId,
-            grantKey: `order:${order.id}:plus`,
-            plusDurationMonths,
-            status: order.userId ? GrantStatus.PENDING_PAIRING : GrantStatus.PENDING_CLAIM,
-          },
-          update: {},
         });
+
+        if (!existingGrant) {
+          await tx.subscriptionGrant.create({
+            data: {
+              orderId: order.id,
+              userId: order.userId,
+              planId: resolvedPlan.planId,
+              grantKey: `order:${order.id}:plus`,
+              plusDurationMonths: resolvedPlan.durationMonths,
+              status: shouldActivateImmediately ? GrantStatus.ACTIVATED : GrantStatus.PENDING_CLAIM,
+              activatedAt: shouldActivateImmediately ? now : null,
+            },
+          });
+        }
+
+        if (shouldActivateImmediately && order.userId) {
+          await activateUserPlusSubscription(
+            tx,
+            order.userId,
+            resolvedPlan.durationMonths,
+            "included_with_order",
+            resolvedPlan.planId
+          );
+        }
       }
 
       // Upsert payment transaction to CAPTURED
@@ -555,19 +621,36 @@ export const reconcileCapturedPayment = async (input: ReconcilePaymentInput): Pr
         data: { status: ReservationStatus.COMMITTED, committedAt: now },
       });
 
-      const plusDurationMonths = calculatePlusDurationFromOrder(order);
-      if (plusDurationMonths > 0) {
-        await tx.subscriptionGrant.upsert({
+      const resolvedPlan = await resolvePlanFromOrder(order);
+      if (resolvedPlan) {
+        const shouldActivateImmediately = Boolean(order.userId);
+        const existingGrant = await tx.subscriptionGrant.findUnique({
           where: { orderId: order.id },
-          create: {
-            orderId: order.id,
-            userId: order.userId,
-            grantKey: `order:${order.id}:plus`,
-            plusDurationMonths,
-            status: order.userId ? GrantStatus.PENDING_PAIRING : GrantStatus.PENDING_CLAIM,
-          },
-          update: {},
         });
+
+        if (!existingGrant) {
+          await tx.subscriptionGrant.create({
+            data: {
+              orderId: order.id,
+              userId: order.userId,
+              planId: resolvedPlan.planId,
+              grantKey: `order:${order.id}:plus`,
+              plusDurationMonths: resolvedPlan.durationMonths,
+              status: shouldActivateImmediately ? GrantStatus.ACTIVATED : GrantStatus.PENDING_CLAIM,
+              activatedAt: shouldActivateImmediately ? now : null,
+            },
+          });
+        }
+
+        if (shouldActivateImmediately && order.userId) {
+          await activateUserPlusSubscription(
+            tx,
+            order.userId,
+            resolvedPlan.durationMonths,
+            "included_with_order",
+            resolvedPlan.planId
+          );
+        }
       }
 
       await tx.outboxJob.upsert({

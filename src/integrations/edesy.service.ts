@@ -13,9 +13,10 @@ export class EdesyService {
   async initiateCall(
     partyA: string,
     partyB: string,
-    reference?: string
+    reference?: string,
+    maxDurationSeconds: number = 590
   ): Promise<InitiateCallResult> {
-    const response = await this.client.initiateCall(partyA, partyB, reference);
+    const response = await this.client.initiateCall(partyA, partyB, reference, maxDurationSeconds);
 
     return {
       callSid: response.data.call_sid,

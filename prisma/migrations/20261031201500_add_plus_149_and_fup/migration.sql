@@ -1,0 +1,11 @@
+-- AlterEnum
+ALTER TYPE "PurchasePackType" ADD VALUE IF NOT EXISTS 'PLUS_149';
+
+-- AlterTable
+ALTER TABLE "Subscription" 
+  ADD COLUMN IF NOT EXISTS "isFupFlagged" BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS "gracePeriodDays" INTEGER NOT NULL DEFAULT 14,
+  ALTER COLUMN "maxActiveTags" SET DEFAULT 4,
+  ALTER COLUMN "hasWhatsappAlerts" SET DEFAULT true,
+  ALTER COLUMN "hasAnalytics" SET DEFAULT true;
+

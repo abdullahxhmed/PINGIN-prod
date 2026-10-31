@@ -1,14 +1,16 @@
 import crypto from "node:crypto";
+import QRCode from "qrcode";
 import { prisma } from "../../lib/prisma.js";
 import {
   BadRequestError,
   ConflictError,
   ForbiddenError,
+  InternalError,
   NotFoundError,
 } from "../../errors/AppError.js";
-import { GrantStatus, QrAssignmentMethod, QrTagOrigin, QrTagStatus, QrTagStockState } from "@prisma/client";
+import { GrantStatus, QrAssignmentMethod, QrTagOrigin, QrTagStatus, QrTagStockState, ResourceType } from "@prisma/client";
 import { getUserSubscription, activateUserPlusSubscription } from "../subscriptions/subscriptions.services.js";
-import { decryptData, decryptPhoneNumber } from "../../utils/data-protection.js";
+import { encryptData, decryptData, decryptPhoneNumber } from "../../utils/data-protection.js";
 
 // Crockford-style character sets excluding visually ambiguous characters: 0, 1, I, O, L
 const LETTER_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ"; // 23 letters (no I, L, O)
@@ -95,6 +97,8 @@ export const getQrTagDetails = async (identifier: string) => {
     tagNumber: tag.tagNumber,
     origin: tag.origin,
     status: tag.status,
+    isPaused: tag.isPaused,
+    pausedAt: tag.pausedAt,
     isAssigned: tag.status === QrTagStatus.ASSIGNED && Boolean(tag.resourceId),
     pairedResource: tag.resource
       ? {
@@ -191,6 +195,25 @@ export const resolveTagToken = async (rawToken: string) => {
   const contactToken = tag.resource.contactLink?.token;
   if (!contactToken || !tag.resource.contactLink?.active) {
     throw new NotFoundError("The vehicle linked to this tag does not have an active contact page.");
+  }
+
+  if (tag.isPaused) {
+    return {
+      status: QrTagStatus.ASSIGNED,
+      action: "PAUSED" as const,
+      isPaused: true,
+      tagNumber: tag.tagNumber,
+      contactToken,
+      redirectUrl: `/contact/${contactToken}?status=paused`,
+      message: "This QR tag is currently paused by the owner. Calls are temporarily disabled.",
+      resource: {
+        id: tag.resource.id,
+        name: decryptData(tag.resource.name),
+        type: tag.resource.type,
+        registrationNum: tag.resource.vehicleDetail?.registrationNum ? decryptData(tag.resource.vehicleDetail.registrationNum) : null,
+        vehicleColour: tag.resource.vehicleDetail?.vehicleColour ?? null,
+      },
+    };
   }
 
   return {
@@ -355,18 +378,10 @@ export const pairQrTag = async ({
   if (!isReplacingOnResource && !isMovingOwnAssignedTag) {
     const { subscription, tags } = await getUserSubscription(userId);
 
-    // If user has a pending PLUS grant waiting to be redeemed upon pairing, allow up to Plus limits (8)
-    const hasPendingPlusGrant = await prisma.subscriptionGrant.findFirst({
-      where: {
-        userId,
-        status: GrantStatus.PENDING_PAIRING,
-      },
-    });
-
-    const maxLimit = hasPendingPlusGrant ? 8 : subscription.maxActiveTags;
+    const maxLimit = subscription.maxActiveTags;
     if (tags.activeCount >= maxLimit) {
       throw new ForbiddenError(
-        `Active tag limit reached (${tags.activeCount}/${maxLimit}) on your account.`
+        `Active tag limit reached (${tags.activeCount}/${maxLimit}) on your account. Both digital tags and physical tag pairings share this quota.`
       );
     }
   }
@@ -534,7 +549,7 @@ export const pairQrTag = async ({
       });
 
       if (redeemed.count === 1) {
-        await activateUserPlusSubscription(tx, userId, grantToRedeem.plusDurationMonths, "included_with_order");
+        await activateUserPlusSubscription(tx, userId, grantToRedeem.plusDurationMonths, "included_with_order", grantToRedeem.planId);
         activatedPlus = true;
         plusDurationMonths = grantToRedeem.plusDurationMonths;
       }
@@ -671,6 +686,8 @@ export const unpairQrTag = async ({
         resourceId: null,
         assignmentMethod: null,
         assignedAt: null,
+        isPaused: false,
+        pausedAt: null,
       },
     });
   });
@@ -712,6 +729,14 @@ export const generateSingleTag = async ({
 
   // Case 1: Tag requested directly for a specific resource
   if (resourceId) {
+    const { subscription, tags } = await getUserSubscription(userId);
+    const maxLimit = subscription.maxActiveTags;
+    if (tags.activeCount >= maxLimit) {
+      throw new ForbiddenError(
+        `Active tag limit reached (${tags.activeCount}/${maxLimit}) on your account. Both digital tags and physical tag pairings share this quota.`
+      );
+    }
+
     const resource = await prisma.resource.findFirst({
       where: {
         id: resourceId,
@@ -822,6 +847,286 @@ export const generateSingleTag = async ({
       status: tag.status,
     },
     resource: null,
+  };
+};
+
+export interface GenerateDigitalQrTagInput {
+  userId: string;
+  resourceId?: string | undefined;
+  vehicleName?: string | undefined;
+  registrationNum?: string | undefined;
+  vehicleColour?: string | undefined;
+}
+
+/**
+ * Generate a digital QR tag on-demand for a Plus subscriber.
+ * Enforces unified quota: Total active tags (digital + physical) must be < subscription.maxActiveTags (4).
+ * Returns high-resolution SVG and PNG data URL ready for instant home/cardstock printing.
+ */
+export const generateDigitalQrTag = async ({
+  userId,
+  resourceId,
+  vehicleName,
+  registrationNum,
+  vehicleColour,
+}: GenerateDigitalQrTagInput) => {
+  const publicAppUrl = process.env.PUBLIC_APP_URL || "https://pingin.co.in";
+
+  // 1. Enforce quota: Total active tags (digital + physical) must be below subscription limit (4)
+  const { subscription, tags } = await getUserSubscription(userId);
+  if (tags.activeCount >= subscription.maxActiveTags) {
+    throw new ForbiddenError(
+      `Active tag limit reached (${tags.activeCount}/${subscription.maxActiveTags}) on your account. Both digital tags and physical tag pairings share this quota.`
+    );
+  }
+
+  // 2. Resolve or create vehicle resource
+  let targetResource = null;
+  if (resourceId) {
+    targetResource = await prisma.resource.findFirst({
+      where: { id: resourceId, userId, active: true },
+      include: { vehicleDetail: true, qrTag: true },
+    });
+    if (!targetResource) {
+      throw new NotFoundError("Vehicle resource not found or does not belong to your account.");
+    }
+    const existingActiveTag = targetResource.qrTag?.find((t) => t.status === QrTagStatus.ASSIGNED);
+    if (existingActiveTag) {
+      throw new ConflictError(
+        `This vehicle already has an active QR tag (${existingActiveTag.tagNumber}). Please unpair it first.`
+      );
+    }
+  } else {
+    // Auto-create vehicle resource for this digital tag
+    const resourceTitle = vehicleName?.trim() || "My Vehicle";
+    targetResource = await prisma.$transaction(async (tx) => {
+      const res = await tx.resource.create({
+        data: {
+          userId,
+          name: encryptData(resourceTitle),
+          type: ResourceType.VEHICLE,
+          active: true,
+        },
+      });
+
+      if (registrationNum || vehicleColour) {
+        await tx.vehicleDetail.create({
+          data: {
+            resourceId: res.id,
+            registrationNum: registrationNum ? encryptData(registrationNum.trim().toUpperCase()) : null,
+            vehicleColour: vehicleColour?.trim() || null,
+          },
+        });
+      }
+
+      await tx.contactLink.create({
+        data: {
+          resourceId: res.id,
+          token: crypto.randomBytes(32).toString("hex"),
+          active: true,
+        },
+      });
+
+      return tx.resource.findUnique({
+        where: { id: res.id },
+        include: { vehicleDetail: true, contactLink: true },
+      });
+    });
+  }
+
+  if (!targetResource) {
+    throw new InternalError("Could not resolve or create target vehicle resource.");
+  }
+
+  // Ensure contact link exists for resource
+  let contactLink = await prisma.contactLink.findUnique({
+    where: { resourceId: targetResource.id },
+  });
+  if (!contactLink) {
+    contactLink = await prisma.contactLink.create({
+      data: {
+        resourceId: targetResource.id,
+        token: crypto.randomBytes(32).toString("hex"),
+        active: true,
+      },
+    });
+  }
+
+  // 3. Generate unique tag number and opaque token
+  let tagNumber = generateTagNumber();
+  while (await prisma.qrTag.findUnique({ where: { tagNumber } })) {
+    tagNumber = generateTagNumber();
+  }
+
+  const token = generateOpaqueToken();
+  const tokenHash = hashQrToken(token);
+  const now = new Date();
+  const qrUrl = `${publicAppUrl}/t/${token}`;
+
+  // 4. Create tag with origin = DIGITAL
+  const createdTag = await prisma.$transaction(async (tx) => {
+    const tag = await tx.qrTag.create({
+      data: {
+        tagNumber,
+        tokenHash,
+        origin: QrTagOrigin.DIGITAL,
+        status: QrTagStatus.ASSIGNED,
+        resourceId: targetResource!.id,
+        assignmentMethod: QrAssignmentMethod.SYSTEM_BOUND,
+        assignedAt: now,
+        isPaused: false,
+      },
+    });
+
+    await tx.qrAssignment.create({
+      data: {
+        qrTagId: tag.id,
+        resourceId: targetResource!.id,
+        method: QrAssignmentMethod.SYSTEM_BOUND,
+        assignedAt: now,
+        unassignedAt: null,
+      },
+    });
+
+    return tag;
+  });
+
+  // 5. Generate high-resolution SVG and PNG data URL for printing
+  const qrSvg = await QRCode.toString(qrUrl, {
+    type: "svg",
+    margin: 1,
+    color: {
+      dark: "#000000",
+      light: "#FFFFFF",
+    },
+  });
+
+  const qrDataUrl = await QRCode.toDataURL(qrUrl, {
+    margin: 1,
+    width: 600,
+    color: {
+      dark: "#000000",
+      light: "#FFFFFF",
+    },
+  });
+
+  return {
+    message: "Digital QR tag generated and paired successfully.",
+    tag: {
+      id: createdTag.id,
+      tagNumber: createdTag.tagNumber,
+      token,
+      qrUrl,
+      origin: createdTag.origin,
+      status: createdTag.status,
+      resourceId: createdTag.resourceId,
+      assignedAt: createdTag.assignedAt,
+      isPaused: createdTag.isPaused,
+    },
+    quota: {
+      used: tags.activeCount + 1,
+      limit: subscription.maxActiveTags,
+      remaining: Math.max(0, subscription.maxActiveTags - (tags.activeCount + 1)),
+    },
+    printable: {
+      tagNumber: createdTag.tagNumber,
+      qrUrl,
+      qrSvg,
+      qrDataUrl,
+      vehicleName: decryptData(targetResource.name),
+      registrationNum: targetResource.vehicleDetail?.registrationNum
+        ? decryptData(targetResource.vehicleDetail.registrationNum)
+        : null,
+      printInstructions: 'Print on photo paper or heavy cardstock. Cut along guides (3" x 3"). Place inside windshield or vehicle window.',
+    },
+    resource: {
+      id: targetResource.id,
+      name: decryptData(targetResource.name),
+      type: targetResource.type,
+      registrationNum: targetResource.vehicleDetail?.registrationNum
+        ? decryptData(targetResource.vehicleDetail.registrationNum)
+        : null,
+    },
+  };
+};
+
+/**
+ * Returns printable QR assets and guidelines for an existing owned tag.
+ */
+export const getDigitalTagPrintable = async (userId: string, identifier: string) => {
+  const publicAppUrl = process.env.PUBLIC_APP_URL || "https://pingin.co.in";
+
+  const trimmed = identifier.trim();
+  const tokenHash = hashQrToken(trimmed);
+  const normalizedTagNumber = trimmed.toUpperCase();
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed);
+
+  const orConditions: any[] = [
+    { tagNumber: normalizedTagNumber },
+    { tokenHash },
+  ];
+  if (isUuid) {
+    orConditions.push({ id: trimmed });
+  }
+
+  const tag = await prisma.qrTag.findFirst({
+    where: {
+      OR: orConditions,
+      resource: {
+        userId,
+        active: true,
+      },
+    },
+    include: {
+      resource: {
+        include: {
+          vehicleDetail: true,
+          contactLink: true,
+        },
+      },
+    },
+  });
+
+  if (!tag || !tag.resource) {
+    throw new NotFoundError("Digital tag not found or does not belong to your account.");
+  }
+
+  const qrTarget = tag.resource.contactLink?.token
+    ? `${publicAppUrl}/t/${tag.resource.contactLink.token}`
+    : `${publicAppUrl}/t/${tag.tagNumber}`;
+
+  const qrSvg = await QRCode.toString(qrTarget, {
+    type: "svg",
+    margin: 1,
+    color: {
+      dark: "#000000",
+      light: "#FFFFFF",
+    },
+  });
+
+  const qrDataUrl = await QRCode.toDataURL(qrTarget, {
+    margin: 1,
+    width: 600,
+    color: {
+      dark: "#000000",
+      light: "#FFFFFF",
+    },
+  });
+
+  return {
+    tagId: tag.id,
+    tagNumber: tag.tagNumber,
+    origin: tag.origin,
+    status: tag.status,
+    isPaused: tag.isPaused,
+    vehicleName: decryptData(tag.resource.name),
+    registrationNum: tag.resource.vehicleDetail?.registrationNum
+      ? decryptData(tag.resource.vehicleDetail.registrationNum)
+      : null,
+    qrUrl: qrTarget,
+    qrSvg,
+    qrDataUrl,
+    printInstructions: 'Print on high quality sticker paper or A4 photo paper. Cut along 3" x 3" guide lines.',
   };
 };
 
@@ -964,6 +1269,8 @@ export const getUserTags = async (userId: string) => {
     tagId: tag.id,
     tagNumber: tag.tagNumber,
     status: tag.status,
+    isPaused: tag.isPaused,
+    pausedAt: tag.pausedAt,
     origin: tag.origin,
     assignedAt: tag.assignedAt,
     resource: tag.resource
@@ -976,4 +1283,122 @@ export const getUserTags = async (userId: string) => {
         }
       : null,
   }));
+};
+
+export interface PauseQrTagInput {
+  userId: string;
+  userRole?: string | undefined;
+  tagId?: string | undefined;
+  tagNumber?: string | undefined;
+  qrToken?: string | undefined;
+  resourceId?: string | undefined;
+  paused?: boolean | undefined;
+}
+
+/**
+ * Pause or resume an active QR tag.
+ * When paused, incoming calls to the vehicle are safely rejected and no calls reach the owner.
+ */
+export const pauseQrTag = async (input: PauseQrTagInput) => {
+  const { userId, userRole, tagId, tagNumber, qrToken, resourceId } = input;
+  const shouldPause = input.paused !== false;
+
+  const conditions: any[] = [];
+  if (tagId) conditions.push({ id: tagId });
+  if (resourceId) conditions.push({ resourceId });
+  if (tagNumber) conditions.push({ tagNumber: tagNumber.trim().toUpperCase() });
+  if (qrToken) {
+    const trimmed = qrToken.trim();
+    conditions.push({ tokenHash: hashQrToken(trimmed) });
+    conditions.push({ tagNumber: trimmed.toUpperCase() });
+  }
+
+  if (conditions.length === 0) {
+    throw new BadRequestError("Must provide tagId, tagNumber, qrToken, or resourceId.");
+  }
+
+  const tag = await prisma.qrTag.findFirst({
+    where: { OR: conditions },
+    include: {
+      resource: {
+        select: { id: true, userId: true, name: true, active: true },
+      },
+    },
+  });
+
+  if (!tag) {
+    throw new NotFoundError("QR tag not found.");
+  }
+
+  if (tag.status === QrTagStatus.REVOKED) {
+    throw new BadRequestError("Cannot pause or resume a revoked QR tag.");
+  }
+
+  if (!tag.resourceId || !tag.resource || tag.status !== QrTagStatus.ASSIGNED) {
+    throw new BadRequestError("This QR tag is not currently paired to any vehicle.");
+  }
+
+  // Authorization: Must be the owner of the resource or an Admin
+  const isOwner = tag.resource.userId === userId;
+  const isAdmin = userRole === "ADMIN";
+
+  if (!isOwner && !isAdmin) {
+    throw new ForbiddenError("You are not authorized to pause or resume this QR tag.");
+  }
+
+  const now = new Date();
+  const updatedTag = await prisma.qrTag.update({
+    where: { id: tag.id },
+    data: {
+      isPaused: shouldPause,
+      pausedAt: shouldPause ? now : null,
+    },
+    include: {
+      resource: {
+        select: {
+          id: true,
+          name: true,
+          type: true,
+        },
+      },
+    },
+  });
+
+  const formattedTag = {
+    id: updatedTag.id,
+    tagNumber: updatedTag.tagNumber,
+    resourceId: updatedTag.resourceId,
+    status: updatedTag.status,
+    isPaused: updatedTag.isPaused,
+    pausedAt: updatedTag.pausedAt,
+    resource: updatedTag.resource
+      ? {
+          id: updatedTag.resource.id,
+          name: decryptData(updatedTag.resource.name),
+          type: updatedTag.resource.type,
+        }
+      : null,
+  };
+
+  return {
+    success: true,
+    message: shouldPause
+      ? "QR tag paused successfully."
+      : "QR tag resumed successfully.",
+    tag: formattedTag,
+    tagId: updatedTag.id,
+    tagNumber: updatedTag.tagNumber,
+    resourceId: updatedTag.resourceId,
+    status: updatedTag.status,
+    isPaused: updatedTag.isPaused,
+    pausedAt: updatedTag.pausedAt,
+    resource: formattedTag.resource,
+  };
+};
+
+/**
+ * Convenience helper to resume a paused QR tag.
+ */
+export const resumeQrTag = async (input: Omit<PauseQrTagInput, "paused">) => {
+  return pauseQrTag({ ...input, paused: false });
 };

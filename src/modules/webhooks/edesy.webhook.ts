@@ -4,6 +4,10 @@ import { logger } from "../../lib/logger.js";
 import { encryptPhoneNumber } from "../../utils/phone-encryption.js";
 import type { communicationCallStatus } from "@prisma/client";
 import type { EdesyWebhookPayload } from "./edesy-schema.js";
+import {
+    calculateBilledDurationSeconds,
+    calculateEstimatedCostPaise,
+} from "../../config/telephony.config.js";
 
 const STATUS_PRECEDENCE: Record<communicationCallStatus, number> = {
     INITIATED: 1,
@@ -265,14 +269,43 @@ const handleEdesyWebhook = async (
                     providerStatus: payload.status ?? call.providerStatus,
                 };
 
+                // 1. Separate actual duration vs billed duration
+                const actualSec = payload.duration_sec ?? call.durationSec ?? (call.connectedAt ? Math.max(0, Math.round((eventTime.getTime() - call.connectedAt.getTime()) / 1000)) : 0);
+                const billedSec = payload.billed_duration_sec ?? calculateBilledDurationSeconds(actualSec, call.provider || "EDESY", true);
+
+                // 2. Extract provider reported cost if present
+                let providerCostPaise = call.providerCostPaise;
+                if (payload.cost_paise != null) {
+                    providerCostPaise = payload.cost_paise;
+                } else if (payload.cost != null) {
+                    const parsed = typeof payload.cost === "number" ? payload.cost : parseFloat(payload.cost);
+                    if (!isNaN(parsed)) {
+                        providerCostPaise = Math.round(parsed * 100);
+                    }
+                }
+
+                // 3. Estimated fallback cost
+                const estimatedCostPaise = calculateEstimatedCostPaise(billedSec, call.provider || "EDESY");
+
                 if (!isAlreadyEnded) {
                     updateData.status = "COMPLETED";
                     updateData.endedAt = call.endedAt ?? eventTime;
-                    if (payload.duration_sec != null) {
-                        updateData.durationSec = payload.duration_sec;
+                    updateData.durationSec = actualSec;
+                    updateData.actualDurationSeconds = actualSec;
+                    updateData.billedDurationSeconds = billedSec;
+                    updateData.providerCostPaise = providerCostPaise;
+                    updateData.estimatedCostPaise = estimatedCostPaise;
+                } else {
+                    // Idempotent processing: only fill missing duration/cost if not recorded
+                    if (payload.duration_sec != null && (call.durationSec == null || call.actualDurationSeconds === 0)) {
+                        updateData.durationSec = actualSec;
+                        updateData.actualDurationSeconds = actualSec;
+                        updateData.billedDurationSeconds = billedSec;
+                        updateData.estimatedCostPaise = estimatedCostPaise;
                     }
-                } else if (payload.duration_sec != null && call.durationSec == null) {
-                    updateData.durationSec = payload.duration_sec;
+                    if (providerCostPaise != null && call.providerCostPaise == null) {
+                        updateData.providerCostPaise = providerCostPaise;
+                    }
                 }
 
                 await prisma.$transaction([
@@ -300,6 +333,12 @@ const handleEdesyWebhook = async (
                 if (!isTerminal) {
                     updateData.status = "MISSED";
                     updateData.endedAt = call.endedAt ?? eventTime;
+                    updateData.actualDurationSeconds = 0;
+                    updateData.billedDurationSeconds = 0;
+                    updateData.estimatedCostPaise = 0;
+                    if (payload.cost_paise != null) {
+                        updateData.providerCostPaise = payload.cost_paise;
+                    }
                 }
 
                 await prisma.$transaction([

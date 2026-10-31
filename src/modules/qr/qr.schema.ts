@@ -25,11 +25,47 @@ export const unpairQrSchema = z
     }
   );
 
+export const pauseQrSchema = z
+  .object({
+    qrToken: z.string().trim().min(1).optional(),
+    tagNumber: z.string().trim().min(1).max(64).optional(),
+    tagId: z.string().uuid("Invalid tag ID format").optional(),
+    resourceId: z.string().uuid("Invalid resource ID format").optional(),
+    paused: z.boolean().optional().default(true),
+  })
+  .refine(
+    (data) => Boolean(data.qrToken || data.tagNumber || data.tagId || data.resourceId),
+    {
+      message: "Must provide at least one identifier: qrToken, tagNumber, tagId, or resourceId",
+    }
+  );
+
+export const resumeQrSchema = z
+  .object({
+    qrToken: z.string().trim().min(1).optional(),
+    tagNumber: z.string().trim().min(1).max(64).optional(),
+    tagId: z.string().uuid("Invalid tag ID format").optional(),
+    resourceId: z.string().uuid("Invalid resource ID format").optional(),
+  })
+  .refine(
+    (data) => Boolean(data.qrToken || data.tagNumber || data.tagId || data.resourceId),
+    {
+      message: "Must provide at least one identifier: qrToken, tagNumber, tagId, or resourceId",
+    }
+  );
+
 export const generateSingleSchema = z.object({
   resourceId: z.string().uuid("Invalid resource ID format").optional(),
   origin: z
-    .enum(["PREPRINTED_INVENTORY", "GENERATED_FOR_RESOURCE"])
+    .enum(["PREPRINTED_INVENTORY", "GENERATED_FOR_RESOURCE", "DIGITAL"])
     .optional(),
+});
+
+export const generateDigitalTagSchema = z.object({
+  resourceId: z.string().uuid("Invalid resource ID format").optional(),
+  vehicleName: z.string().trim().min(1).max(100).optional(),
+  registrationNum: z.string().trim().min(1).max(20).optional(),
+  vehicleColour: z.string().trim().min(1).max(30).optional(),
 });
 
 export const createBatchSchema = z.object({

@@ -184,6 +184,8 @@ export const adminListQrTags = async ({
         tagNumber: true,
         origin: true,
         status: true,
+        isPaused: true,
+        pausedAt: true,
         assignmentMethod: true,
         assignedAt: true,
         createdAt: true,
@@ -210,6 +212,8 @@ export const adminListQrTags = async ({
       tagNumber: t.tagNumber,
       origin: t.origin,
       status: t.status,
+      isPaused: t.isPaused,
+      pausedAt: t.pausedAt,
       assignmentMethod: t.assignmentMethod,
       assignedAt: t.assignedAt,
       createdAt: t.createdAt,
@@ -234,11 +238,12 @@ export const adminListQrTags = async ({
  * Get QR tag inventory summary counts by status.
  */
 export const adminQrInventorySummary = async () => {
-  const [total, assigned, unassigned, revoked, consolidated] = await Promise.all([
+  const [total, assigned, unassigned, revoked, paused, consolidated] = await Promise.all([
     prisma.qrTag.count(),
     prisma.qrTag.count({ where: { status: QrTagStatus.ASSIGNED } }),
     prisma.qrTag.count({ where: { status: QrTagStatus.UNASSIGNED } }),
     prisma.qrTag.count({ where: { status: QrTagStatus.REVOKED } }),
+    prisma.qrTag.count({ where: { status: QrTagStatus.ASSIGNED, isPaused: true } }),
     getConsolidatedTagCounts(),
   ]);
 
@@ -252,6 +257,7 @@ export const adminQrInventorySummary = async () => {
     assigned,
     unassigned,
     revoked,
+    paused,
     readyToSell: consolidated.readyToSell,
     inUse: consolidated.inUse,
     inWarehouse: consolidated.inWarehouse,

@@ -6,6 +6,7 @@ import {
   getAvailablePacksController,
   getMyPurchasesController,
   getMySubscriptionController,
+  getUserTelephonyUsageController,
   selectActiveTagsController,
   verifySubscriptionPaymentController,
 } from "./subscriptions.controllers.js";
@@ -19,6 +20,7 @@ router.get("/packs", getAvailablePacksController);
 router.use(authenticateRequest);
 
 router.get("/me", getMySubscriptionController);
+router.get("/telephony-usage", getUserTelephonyUsageController);
 router.post("/select-active-tags", selectActiveTagsController);
 
 // Payment Gateway routes

@@ -53,6 +53,7 @@ enum ResourceType {
 enum QrTagOrigin {
   PREPRINTED_INVENTORY
   GENERATED_FOR_RESOURCE
+  DIGITAL
 }
 
 enum QrTagStatus {
@@ -68,6 +69,7 @@ enum SubscriptionTier {
 }
 
 enum PurchasePackType {
+  PLUS_149
   PACK_179
   PACK_499
   PLUS_RENEWAL
@@ -107,6 +109,8 @@ enum ProductType {
   PHYSICAL_TAG_PACK
   SUBSCRIPTION_ONLY
   MERCHANDISE
+  DIGITAL_ACCESS
+  REPLACEMENT_PACK
 }
 
 enum ComponentType {
@@ -229,6 +233,7 @@ model User {
   orders                Order[]
   subscriptionGrants    SubscriptionGrant[]
   purchaseClaims        PurchaseClaim[]
+  communicationCalls    CommunicationCall[]
 }
 
 model ContactEndpoint {
@@ -263,6 +268,7 @@ model Resource {
   qrAssignment          QrAssignment[]
   qrTag                 QrTag[]
   tagVisits             TagVisit[]
+  communicationCalls    CommunicationCall[]
 }
 
 model VehicleDetail {
@@ -322,13 +328,26 @@ model CommunicationCall {
   sessionId String @db.Uuid
   callSid   String @unique
 
+  userId     String? @db.Uuid
+  resourceId String? @db.Uuid
+  qrTagId    String? @db.Uuid
+
+  provider   String  @default("EDESY")
+
   caller         String
   callee         String
   direction      String?
   status         communicationCallStatus
   providerStatus String?
 
-  durationSec Int?
+  durationSec           Int?
+  actualDurationSeconds Int      @default(0)
+  billedDurationSeconds Int      @default(0)
+
+  providerCostPaise     Int?
+  estimatedCostPaise    Int?
+  currency              String   @default("INR")
+
   incomingAt  DateTime?
   connectedAt DateTime?
   endedAt     DateTime?
@@ -336,9 +355,17 @@ model CommunicationCall {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  session CommunicationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  session  CommunicationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user     User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  resource Resource?            @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  qrTag    QrTag?               @relation(fields: [qrTagId], references: [id], onDelete: SetNull)
 
   @@index([sessionId])
+  @@index([userId, createdAt])
+  @@index([resourceId])
+  @@index([qrTagId])
+  @@index([status, createdAt])
+  @@index([provider, createdAt])
 }
 
 model EdesyWebhookEvent {
@@ -389,6 +416,8 @@ model QrTag {
   tokenHash        String              @unique
   origin           QrTagOrigin
   status           QrTagStatus         @default(UNASSIGNED)
+  isPaused         Boolean             @default(false)
+  pausedAt         DateTime?
 
   resourceId       String?             @unique @db.Uuid
   resource         Resource?           @relation(fields: [resourceId], references: [id])
@@ -402,8 +431,11 @@ model QrTag {
   assignments      QrAssignment[]
   tagVisits        TagVisit[]
   reservedTags     ReservedTag[]
-  orderAllocations OrderTagAllocation[]
-  packingScans     PackingScan[]
+  orderAllocations   OrderTagAllocation[]
+  packingScans       PackingScan[]
+  communicationCalls CommunicationCall[]
+
+  @@index([isPaused])
 }
 
 model QrAssignment {
@@ -444,14 +476,32 @@ model TagVisit {
   @@index([createdAt])
 }
 
+model Plan {
+  id           String             @id @default(uuid()) @db.Uuid
+  code         String             @unique // e.g. "STARTER", "EXTENDED"
+  name         String             // "Starter"
+  tagQuota     Int                @default(4)
+  durationDays Int                @default(365)
+  isActive     Boolean            @default(true)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  components    ProductComponent[]
+  grants        SubscriptionGrant[]
+  subscriptions Subscription[]
+}
+
 model Subscription {
   id                String           @id @default(uuid()) @db.Uuid
   userId            String           @unique @db.Uuid
+  planId            String?          @db.Uuid
 
   tier              SubscriptionTier @default(BASIC)
-  maxActiveTags     Int              @default(2)
-  hasWhatsappAlerts Boolean          @default(false)
-  hasAnalytics      Boolean          @default(false)
+  maxActiveTags     Int              @default(4)
+  hasWhatsappAlerts Boolean          @default(true)
+  hasAnalytics      Boolean          @default(true)
+  isFupFlagged      Boolean          @default(false)
+  gracePeriodDays   Int              @default(14)
 
   startsAt          DateTime         @default(now())
   expiresAt         DateTime?
@@ -460,9 +510,11 @@ model Subscription {
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  user User  @relation(fields: [userId], references: [id], onDelete: Restrict)
+  plan Plan? @relation(fields: [planId], references: [id], onDelete: SetNull)
 
   @@index([tier, expiresAt])
+  @@index([planId])
 }
 
 model SubscriptionPurchase {
@@ -560,6 +612,7 @@ model ProductVariant {
 model ProductComponent {
   id                 String         @id @default(uuid()) @db.Uuid
   variantId          String         @db.Uuid
+  planId             String?        @db.Uuid
   componentType      ComponentType
   name               String
   quantity           Int            @default(1)
@@ -567,9 +620,11 @@ model ProductComponent {
   inventorySku       String?
 
   variant            ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  plan               Plan?          @relation(fields: [planId], references: [id], onDelete: SetNull)
   reservedTags       ReservedTag[]
 
   @@index([variantId])
+  @@index([planId])
 }
 
 // PRINT CONFIGURATION & PRODUCTION BATCHES
@@ -888,6 +943,7 @@ model SubscriptionGrant {
   id                 String      @id @default(uuid()) @db.Uuid
   userId             String?     @db.Uuid // Null until claimed
   orderId            String      @db.Uuid
+  planId             String?     @db.Uuid
   grantKey           String      @unique // e.g. "order:<orderId>:plus"
   plusDurationMonths Int         @default(12)
   status             GrantStatus @default(PENDING_CLAIM)
@@ -898,9 +954,11 @@ model SubscriptionGrant {
 
   order              Order       @relation(fields: [orderId], references: [id], onDelete: Restrict)
   user               User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  plan               Plan?       @relation(fields: [planId], references: [id], onDelete: SetNull)
 
   @@unique([orderId])
   @@index([userId, status])
+  @@index([planId])
 }
 
 model PurchaseClaim {

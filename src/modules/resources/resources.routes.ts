@@ -7,6 +7,8 @@ import {
     deleteResourceByIdController,
     getResourceCallsController,
     getResourceAnalyticsController,
+    pauseResourceTagController,
+    resumeResourceTagController,
 } from "./resources.controllers.js";
 
 const router = express.Router();
@@ -24,6 +26,15 @@ router
     .route('/:id/analytics')
     .get(getResourceAnalyticsController);
 
+router
+    .route('/:id/pause')
+    .post(pauseResourceTagController)
+    .patch(pauseResourceTagController);
+
+router
+    .route('/:id/resume')
+    .post(resumeResourceTagController)
+    .patch(resumeResourceTagController);
 
 router
     .route('/:id')

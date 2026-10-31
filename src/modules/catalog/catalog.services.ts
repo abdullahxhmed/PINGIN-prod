@@ -502,4 +502,209 @@ export const seedDefaultCatalog = async () => {
       },
     },
   });
+
+  // 6. Base Starter Plan
+  const starterPlan = await prisma.plan.upsert({
+    where: { code: "STARTER" },
+    update: {
+      name: "Starter Plan",
+      tagQuota: 4,
+      durationDays: 365,
+      isActive: true,
+    },
+    create: {
+      code: "STARTER",
+      name: "Starter Plan",
+      tagQuota: 4,
+      durationDays: 365,
+      isActive: true,
+    },
+  });
+
+  // 7. Product A: Digital QR Access (SKU: DIGITAL-ACCESS, ₹149, Starter Plan)
+  const digitalAccess = await prisma.product.upsert({
+    where: { sku: "DIGITAL-ACCESS" },
+    update: {
+      type: ProductType.DIGITAL_ACCESS,
+      basePrice: 14900,
+      active: true,
+    },
+    create: {
+      sku: "DIGITAL-ACCESS",
+      name: "Digital QR Access",
+      slug: "digital-qr-access",
+      description: "Instant digital QR tag access with printable sheets for home/local printing. Includes 1-year Starter Plan.",
+      type: ProductType.DIGITAL_ACCESS,
+      basePrice: 14900, // ₹149
+      weightGrams: 0,
+      lengthCm: 0,
+      breadthCm: 0,
+      heightCm: 0,
+    },
+  });
+
+  const digitalVariant = await prisma.productVariant.upsert({
+    where: { sku: "VAR-DIGITAL-ACCESS" },
+    update: {
+      price: 14900,
+      active: true,
+    },
+    create: {
+      productId: digitalAccess.id,
+      sku: "VAR-DIGITAL-ACCESS",
+      name: "Digital Access (Self-Print)",
+      price: 14900,
+      active: true,
+    },
+  });
+
+  const existingDigitalComp = await prisma.productComponent.findFirst({
+    where: { variantId: digitalVariant.id, componentType: ComponentType.DIGITAL_ENTITLEMENT },
+  });
+  if (existingDigitalComp) {
+    await prisma.productComponent.update({
+      where: { id: existingDigitalComp.id },
+      data: { planId: starterPlan.id, plusDurationMonths: 12 },
+    });
+  } else {
+    await prisma.productComponent.create({
+      data: {
+        variantId: digitalVariant.id,
+        componentType: ComponentType.DIGITAL_ENTITLEMENT,
+        name: "Starter Plan Entitlement",
+        quantity: 1,
+        plusDurationMonths: 12,
+        planId: starterPlan.id,
+      },
+    });
+  }
+
+  // 8. Product B: Physical QR Kit (SKU: PHYSICAL-KIT, ₹499, Starter Plan + 2 printed stickers)
+  const physicalKit = await prisma.product.upsert({
+    where: { sku: "PHYSICAL-KIT" },
+    update: {
+      type: ProductType.PHYSICAL_TAG_PACK,
+      basePrice: 49900,
+      active: true,
+    },
+    create: {
+      sku: "PHYSICAL-KIT",
+      name: "Physical QR Kit",
+      slug: "physical-qr-kit",
+      description: "Complete vehicle kit with 2 professionally printed QR stickers. 1-year Starter Plan included.",
+      type: ProductType.PHYSICAL_TAG_PACK,
+      basePrice: 49900, // ₹499
+      weightGrams: 50,
+      lengthCm: 15.0,
+      breadthCm: 10.0,
+      heightCm: 1.0,
+    },
+  });
+
+  const physicalVariant = await prisma.productVariant.upsert({
+    where: { sku: "VAR-PHYSICAL-KIT" },
+    update: {
+      price: 49900,
+      active: true,
+    },
+    create: {
+      productId: physicalKit.id,
+      sku: "VAR-PHYSICAL-KIT",
+      name: "Physical Pack (2 Stickers + 1 Year Included)",
+      price: 49900,
+      active: true,
+    },
+  });
+
+  const existingPhysEntComp = await prisma.productComponent.findFirst({
+    where: { variantId: physicalVariant.id, componentType: ComponentType.DIGITAL_ENTITLEMENT },
+  });
+  if (existingPhysEntComp) {
+    await prisma.productComponent.update({
+      where: { id: existingPhysEntComp.id },
+      data: { planId: starterPlan.id, plusDurationMonths: 12 },
+    });
+  } else {
+    await prisma.productComponent.create({
+      data: {
+        variantId: physicalVariant.id,
+        componentType: ComponentType.DIGITAL_ENTITLEMENT,
+        name: "Starter Plan Entitlement (1 Year Included)",
+        quantity: 1,
+        plusDurationMonths: 12,
+        planId: starterPlan.id,
+      },
+    });
+  }
+
+  const existingPhysTagComp = await prisma.productComponent.findFirst({
+    where: { variantId: physicalVariant.id, componentType: ComponentType.SERIALIZED_QR_TAG },
+  });
+  if (!existingPhysTagComp) {
+    await prisma.productComponent.create({
+      data: {
+        variantId: physicalVariant.id,
+        componentType: ComponentType.SERIALIZED_QR_TAG,
+        name: "Printed Vehicle Stickers",
+        quantity: 2,
+        inventorySku: "TAG-VEHICLE-STICKER",
+        plusDurationMonths: 0,
+        planId: null,
+      },
+    });
+  }
+
+  // 9. Product C: Replacement Kit (SKU: REPLACEMENT-KIT, ₹199, 2 printed stickers, NO plan)
+  const replacementKit = await prisma.product.upsert({
+    where: { sku: "REPLACEMENT-KIT" },
+    update: {
+      type: ProductType.REPLACEMENT_PACK,
+      basePrice: 19900,
+      active: true,
+    },
+    create: {
+      sku: "REPLACEMENT-KIT",
+      name: "Replacement Kit",
+      slug: "replacement-kit",
+      description: "2 replacement physical vehicle QR stickers for existing subscribers. Does not include or extend subscription.",
+      type: ProductType.REPLACEMENT_PACK,
+      basePrice: 19900, // ₹199
+      weightGrams: 30,
+      lengthCm: 10.0,
+      breadthCm: 10.0,
+      heightCm: 0.5,
+    },
+  });
+
+  const replacementVariant = await prisma.productVariant.upsert({
+    where: { sku: "VAR-REPLACEMENT-KIT" },
+    update: {
+      price: 19900,
+      active: true,
+    },
+    create: {
+      productId: replacementKit.id,
+      sku: "VAR-REPLACEMENT-KIT",
+      name: "Replacement Pack (2 Stickers)",
+      price: 19900,
+      active: true,
+    },
+  });
+
+  const existingReplTagComp = await prisma.productComponent.findFirst({
+    where: { variantId: replacementVariant.id, componentType: ComponentType.SERIALIZED_QR_TAG },
+  });
+  if (!existingReplTagComp) {
+    await prisma.productComponent.create({
+      data: {
+        variantId: replacementVariant.id,
+        componentType: ComponentType.SERIALIZED_QR_TAG,
+        name: "Replacement Vehicle Stickers",
+        quantity: 2,
+        inventorySku: "TAG-VEHICLE-STICKER",
+        plusDurationMonths: 0,
+        planId: null,
+      },
+    });
+  }
 };

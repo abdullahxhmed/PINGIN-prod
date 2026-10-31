@@ -6,6 +6,7 @@ import {
   createPackPurchase,
   getUserPurchases,
   getUserSubscription,
+  getUserTelephonyUsage,
   selectActiveTags,
   verifySubscriptionPayment,
 } from "./subscriptions.services.js";
@@ -28,6 +29,22 @@ export const getMySubscriptionController = asyncHandler(
       success: true,
       data,
     });
+  }
+);
+
+/**
+ * Customer telephony usage endpoint.
+ * GET /api/subscriptions/telephony-usage
+ */
+export const getUserTelephonyUsageController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const userId = req.user?.id;
+    if (!userId) {
+      throw new BadRequestError("User authentication required");
+    }
+
+    const usageData = await getUserTelephonyUsage(userId);
+    res.status(200).json(usageData);
   }
 );
 

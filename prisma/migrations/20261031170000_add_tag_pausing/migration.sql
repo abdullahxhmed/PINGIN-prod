@@ -1,0 +1,7 @@
+-- AlterTable
+ALTER TABLE "QrTag" ADD COLUMN IF NOT EXISTS "isPaused" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "QrTag" ADD COLUMN IF NOT EXISTS "pausedAt" TIMESTAMP(3);
+
+-- CreateIndex
+CREATE INDEX IF NOT EXISTS "QrTag_isPaused_idx" ON "QrTag"("isPaused");
+

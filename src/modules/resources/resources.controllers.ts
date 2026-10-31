@@ -1,6 +1,7 @@
 import express from "express";
 import asyncHandler from "express-async-handler";
 import { createResource, deleteResourceById, getResourceById, getResources, modifyResourceById, getResourceCalls, getResourceAnalytics } from "./resources.services.js";
+import { pauseQrTag, resumeQrTag } from "../qr/qr.services.js";
 
 import { BadRequestError } from "../../errors/AppError.js";
 
@@ -143,6 +144,49 @@ const getResourceAnalyticsController = asyncHandler(async (req, res) => {
   res.status(200).json(analytics);
 });
 
+/**
+ * @description Pause calls for a resource's linked QR tag
+ * @route POST /api/resources/:id/pause, PATCH /api/resources/:id/pause
+ * @access private
+ */
+const pauseResourceTagController = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!id || typeof id !== "string") {
+    throw new BadRequestError("Resource ID is required");
+  }
+
+  const paused = req.body?.paused !== false;
+
+  const result = await pauseQrTag({
+    userId: req.user.id,
+    userRole: req.user.role,
+    resourceId: id,
+    paused,
+  });
+
+  res.status(200).json(result);
+});
+
+/**
+ * @description Resume calls for a resource's linked QR tag
+ * @route POST /api/resources/:id/resume, PATCH /api/resources/:id/resume
+ * @access private
+ */
+const resumeResourceTagController = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!id || typeof id !== "string") {
+    throw new BadRequestError("Resource ID is required");
+  }
+
+  const result = await resumeQrTag({
+    userId: req.user.id,
+    userRole: req.user.role,
+    resourceId: id,
+  });
+
+  res.status(200).json(result);
+});
+
 export {
     createResourceController,
     getResourceController,
@@ -151,4 +195,6 @@ export {
     deleteResourceByIdController,
     getResourceCallsController,
     getResourceAnalyticsController,
+    pauseResourceTagController,
+    resumeResourceTagController,
 }

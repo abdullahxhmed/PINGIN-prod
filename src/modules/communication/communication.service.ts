@@ -2,7 +2,7 @@ import { prisma } from "../../lib/prisma.js";
 import { CommunicationSessionType } from "@prisma/client";
 import { createCommunicationSession, getCommunicationContact } from "../public-contact/contact.services.js";
 import { edesyService } from "../../integrations/edesy.service.js";
-import { InternalError, NotFoundError } from "../../errors/AppError.js"
+import { ForbiddenError, InternalError, NotFoundError } from "../../errors/AppError.js"
 import { checkCallRateLimit } from "../../middleware/call-rateLimiter.js";
 import { encryptPhoneNumber, decryptPhoneNumber, isEncrypted } from "../../utils/data-protection.js";
 
@@ -21,6 +21,12 @@ const initiateCall = async ({
   visitId,
 }: InitiateCallInput) => {
     const contact = await getCommunicationContact(token);
+
+    if (contact.isPaused) {
+        throw new ForbiddenError(
+            "This QR tag is currently paused by the owner. Calls are temporarily disabled."
+        );
+    }
 
     await checkCallRateLimit(
         contact.contactLinkId,
@@ -44,23 +50,30 @@ const initiateCall = async ({
         visitId,
     );
 
-  // 3. Ask Edesy to initiate the call with plaintext numbers
+  // 3. Ask Edesy to initiate the call with plaintext numbers and < 10min hard cutoff
   const edesyCall = await edesyService.initiateCall(
     plainVisitorPhone,
     plainOwnerPhone,
-    session.reference
+    session.reference,
+    contact.hardCallLimitSeconds ?? 590
   );
 
-  // 4. Store the actual provider call encrypted at rest
+  // 4. Store the actual provider call encrypted at rest in the usage ledger
   const communicationCall = await prisma.communicationCall.create({
     data: {
       sessionId: session.id,
       callSid: edesyCall.callSid,
+      userId: contact.ownerUserId,
+      resourceId: contact.resourceId,
+      qrTagId: contact.activeTagId,
+      provider: "EDESY",
       caller: encryptPhoneNumber(plainVisitorPhone),
       callee: encryptPhoneNumber(plainOwnerPhone),
       direction: "click_to_call",
       status: "INITIATED",
       providerStatus: edesyCall.providerStatus,
+      actualDurationSeconds: 0,
+      billedDurationSeconds: 0,
     },
   });
 

@@ -4,16 +4,23 @@ import {
   pairQrSchema,
   unpairQrSchema,
   generateSingleSchema,
+  generateDigitalTagSchema,
   createBatchSchema,
+  pauseQrSchema,
+  resumeQrSchema,
 } from "./qr.schema.js";
 import {
   getQrTagDetails,
   pairQrTag,
   unpairQrTag,
   generateSingleTag,
+  generateDigitalQrTag,
+  getDigitalTagPrintable,
   createPreprintedBatch,
   getUserTags,
   resolveTagToken,
+  pauseQrTag,
+  resumeQrTag,
 } from "./qr.services.js";
 
 /**
@@ -109,6 +116,48 @@ export const generateSingleTagController = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @description Generate a digital QR tag on-demand for a Plus subscriber
+ * @route POST /api/qr/digital/generate
+ * @access private
+ */
+export const generateDigitalTagController = asyncHandler(async (req, res) => {
+  const parseResult = generateDigitalTagSchema.safeParse(req.body);
+
+  if (!parseResult.success) {
+    const errorMsg = parseResult.error.issues[0]?.message || "Invalid digital tag request data";
+    throw new BadRequestError(errorMsg);
+  }
+
+  const { resourceId, vehicleName, registrationNum, vehicleColour } = parseResult.data;
+
+  const result = await generateDigitalQrTag({
+    userId: req.user.id,
+    resourceId,
+    vehicleName,
+    registrationNum,
+    vehicleColour,
+  });
+
+  res.status(201).json(result);
+});
+
+/**
+ * @description Get printable assets (SVG, QR Data URL, guidelines) for an owned tag
+ * @route GET /api/qr/digital/:identifier/print
+ * @access private
+ */
+export const getDigitalTagPrintableController = asyncHandler(async (req, res) => {
+  const { identifier } = req.params;
+
+  if (!identifier || typeof identifier !== "string") {
+    throw new BadRequestError("Tag identifier parameter is required");
+  }
+
+  const result = await getDigitalTagPrintable(req.user.id, identifier);
+  res.status(200).json(result);
+});
+
+/**
  * @description Generate a batch of preprinted QR tags for print production (Admin Only)
  * @route POST /api/qr/batch
  * @access private (admin only)
@@ -181,13 +230,106 @@ export const redirectTagScanController = asyncHandler(async (req, res) => {
   try {
     const result = await resolveTagToken(token);
     const redirectUrl =
-      result.action === "CONTACT"
-        ? `${result.redirectUrl}?src=qr_scan`
+      result.action === "CONTACT" || result.action === "PAUSED"
+        ? `${result.redirectUrl}${result.redirectUrl.includes("?") ? "&" : "?"}src=qr_scan`
         : result.redirectUrl;
 
     res.redirect(302, `${publicAppUrl}${redirectUrl}`);
   } catch (err: any) {
     res.redirect(302, `${publicAppUrl}/tag/invalid`);
   }
+});
+
+/**
+ * @description Pause a QR tag so that incoming calls are safely rejected
+ * @route POST /api/qr/pause, POST /api/qr/:identifier/pause
+ * @access private
+ */
+export const pauseQrTagController = asyncHandler(async (req, res) => {
+  const rawIdentifier = req.params?.identifier;
+  const identifier = typeof rawIdentifier === "string" ? rawIdentifier.trim() : undefined;
+  const body = req.body || {};
+
+  let tagId = body.tagId;
+  let tagNumber = body.tagNumber;
+  let resourceId = body.resourceId;
+  let qrToken = body.qrToken;
+
+  if (identifier) {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+    if (isUuid) {
+      tagId = tagId || identifier;
+    } else {
+      tagNumber = tagNumber || identifier;
+      qrToken = qrToken || identifier;
+    }
+  }
+
+  const parseResult = pauseQrSchema.safeParse({
+    tagId,
+    tagNumber,
+    resourceId,
+    qrToken,
+    paused: body.paused,
+  });
+
+  if (!parseResult.success) {
+    const errorMsg = parseResult.error.issues[0]?.message || "Invalid pause request data";
+    throw new BadRequestError(errorMsg);
+  }
+
+  const result = await pauseQrTag({
+    userId: req.user.id,
+    userRole: req.user.role,
+    ...parseResult.data,
+  });
+
+  res.status(200).json(result);
+});
+
+/**
+ * @description Resume a paused QR tag so that incoming calls are accepted again
+ * @route POST /api/qr/resume, POST /api/qr/:identifier/resume
+ * @access private
+ */
+export const resumeQrTagController = asyncHandler(async (req, res) => {
+  const rawIdentifier = req.params?.identifier;
+  const identifier = typeof rawIdentifier === "string" ? rawIdentifier.trim() : undefined;
+  const body = req.body || {};
+
+  let tagId = body.tagId;
+  let tagNumber = body.tagNumber;
+  let resourceId = body.resourceId;
+  let qrToken = body.qrToken;
+
+  if (identifier) {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+    if (isUuid) {
+      tagId = tagId || identifier;
+    } else {
+      tagNumber = tagNumber || identifier;
+      qrToken = qrToken || identifier;
+    }
+  }
+
+  const parseResult = resumeQrSchema.safeParse({
+    tagId,
+    tagNumber,
+    resourceId,
+    qrToken,
+  });
+
+  if (!parseResult.success) {
+    const errorMsg = parseResult.error.issues[0]?.message || "Invalid resume request data";
+    throw new BadRequestError(errorMsg);
+  }
+
+  const result = await resumeQrTag({
+    userId: req.user.id,
+    userRole: req.user.role,
+    ...parseResult.data,
+  });
+
+  res.status(200).json(result);
 });
 

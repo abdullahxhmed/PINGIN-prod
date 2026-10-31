@@ -16,18 +16,172 @@ import {
 } from "./subscriptions.types.js";
 import { decryptPhoneNumber } from "../../utils/data-protection.js";
 
+export interface SubscriptionCallingCheck {
+  canMakeCalls: boolean;
+  status: "ACTIVE" | "GRACE_PERIOD" | "EXPIRED" | "INACTIVE";
+  tier: SubscriptionTier;
+  isGracePeriod: boolean;
+  isExpired: boolean;
+  whatsappOnly: boolean;
+  isFupFlagged: boolean;
+  monthlyUsedSeconds: number;
+  monthlyFupLimitSeconds: number;
+  hardCallLimitSeconds: number;
+  message?: string;
+}
+
 /**
- * Returns user's active subscription, automatically creating default BASIC plan if none exists,
- * and deriving status directly from tier and expiresAt.
- *
- * Rules:
- * - BASIC with expiresAt = null means permanent lifetime access.
- * - PLUS with a future expiresAt means active paid access.
- * - PLUS with an elapsed expiresAt means entitlement has expired -> resets row to BASIC.
+ * Checks calling entitlement, grace period, and 5-min monthly Fair Use Policy.
+ * - During 14-day grace period: Calls continue normally.
+ * - After 14-day grace period: All phone calls are stopped; WhatsApp alerts only.
+ * - Hard call cutoff: 590s (strictly below 10 minutes).
+ */
+export const checkUserSubscriptionCallingStatus = async (
+  userId: string
+): Promise<SubscriptionCallingCheck> => {
+  const subscription = await prisma.subscription.findUnique({
+    where: { userId },
+  });
+
+  const now = new Date();
+  const plusConfig = PLAN_CONFIGS[SubscriptionTier.PLUS];
+  const hardCallLimitSeconds = plusConfig.hardCallLimitSeconds; // 590s (< 10 min)
+  const monthlyFupLimitSeconds = plusConfig.fupMinutesPerMonth * 60; // 300s (5 min)
+
+  // 1. Calculate current month telephony usage
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthlyUsage = await prisma.communicationCall.aggregate({
+    where: {
+      session: {
+        resource: { userId },
+      },
+      status: "COMPLETED",
+      createdAt: { gte: startOfMonth },
+    },
+    _sum: { durationSec: true },
+  });
+  const monthlyUsedSeconds = monthlyUsage._sum.durationSec ?? 0;
+  const isFupFlagged = monthlyUsedSeconds > monthlyFupLimitSeconds;
+
+  // Sync isFupFlagged in DB if changed
+  if (subscription && subscription.isFupFlagged !== isFupFlagged) {
+    await prisma.subscription
+      .update({
+        where: { userId },
+        data: { isFupFlagged },
+      })
+      .catch((err) => console.warn("Failed to update isFupFlagged:", err));
+  }
+
+  // 2. Determine expiration and grace period
+  if (!subscription) {
+    return {
+      canMakeCalls: false,
+      status: "INACTIVE",
+      tier: SubscriptionTier.BASIC,
+      isGracePeriod: false,
+      isExpired: true,
+      whatsappOnly: true,
+      isFupFlagged,
+      monthlyUsedSeconds,
+      monthlyFupLimitSeconds,
+      hardCallLimitSeconds,
+      message: "No active subscription found. Calls are disabled; WhatsApp alerts only.",
+    };
+  }
+
+  const gracePeriodDays = subscription.gracePeriodDays ?? 14;
+  const gracePeriodMs = gracePeriodDays * 24 * 60 * 60 * 1000;
+
+  if (subscription.tier === SubscriptionTier.PLUS) {
+    if (subscription.expiresAt) {
+      if (now <= subscription.expiresAt) {
+        return {
+          canMakeCalls: true,
+          status: "ACTIVE",
+          tier: subscription.tier,
+          isGracePeriod: false,
+          isExpired: false,
+          whatsappOnly: false,
+          isFupFlagged,
+          monthlyUsedSeconds,
+          monthlyFupLimitSeconds,
+          hardCallLimitSeconds,
+        };
+      }
+
+      // Past expiresAt: Check 14-day grace period
+      const timeSinceExpiry = now.getTime() - subscription.expiresAt.getTime();
+      if (timeSinceExpiry <= gracePeriodMs) {
+        return {
+          canMakeCalls: true,
+          status: "GRACE_PERIOD",
+          tier: subscription.tier,
+          isGracePeriod: true,
+          isExpired: false,
+          whatsappOnly: false,
+          isFupFlagged,
+          monthlyUsedSeconds,
+          monthlyFupLimitSeconds,
+          hardCallLimitSeconds,
+          message: `Subscription is in ${gracePeriodDays}-day grace period. Please renew to avoid call suspension.`,
+        };
+      }
+
+      // Past 14-day grace period: Calls STOPPED! WhatsApp only.
+      return {
+        canMakeCalls: false,
+        status: "EXPIRED",
+        tier: subscription.tier,
+        isGracePeriod: false,
+        isExpired: true,
+        whatsappOnly: true,
+        isFupFlagged,
+        monthlyUsedSeconds,
+        monthlyFupLimitSeconds,
+        hardCallLimitSeconds,
+        message: "14-day grace period expired. All phone calls are stopped. WhatsApp alerts only.",
+      };
+    }
+
+    // Plus without expiresAt (unusual): treat as active
+    return {
+      canMakeCalls: true,
+      status: "ACTIVE",
+      tier: subscription.tier,
+      isGracePeriod: false,
+      isExpired: false,
+      whatsappOnly: false,
+      isFupFlagged,
+      monthlyUsedSeconds,
+      monthlyFupLimitSeconds,
+      hardCallLimitSeconds,
+    };
+  }
+
+  // Tier is BASIC (expired / unpaid fallback)
+  return {
+    canMakeCalls: false,
+    status: "EXPIRED",
+    tier: subscription.tier,
+    isGracePeriod: false,
+    isExpired: true,
+    whatsappOnly: true,
+    isFupFlagged,
+    monthlyUsedSeconds,
+    monthlyFupLimitSeconds,
+    hardCallLimitSeconds,
+    message: "Service expired. Phone calls stopped. WhatsApp notifications only.",
+  };
+};
+
+/**
+ * Returns user's active subscription, enforcing 14-day grace period and WhatsApp fallback.
  */
 export const getUserSubscription = async (userId: string) => {
   let subscription = await prisma.subscription.findUnique({
     where: { userId },
+    include: { plan: true },
   });
 
   const now = new Date();
@@ -45,10 +199,18 @@ export const getUserSubscription = async (userId: string) => {
         startsAt: now,
         expiresAt: null,
       },
+      include: { plan: true },
     });
   }
 
-  // 2. Fetch user's currently paired QR tags (both ASSIGNED and SUSPENDED)
+  if (!subscription) {
+    throw new NotFoundError("Subscription record could not be resolved.");
+  }
+
+  // 2. Fetch calling and FUP status
+  const callingStatus = await checkUserSubscriptionCallingStatus(userId);
+
+  // 3. Fetch user's currently paired QR tags (both ASSIGNED and SUSPENDED)
   const pairedTags = await prisma.qrTag.findMany({
     where: {
       resource: {
@@ -80,50 +242,6 @@ export const getUserSubscription = async (userId: string) => {
   const assignedTags = pairedTags.filter((t) => t.status === QrTagStatus.ASSIGNED);
   const suspendedTags = pairedTags.filter((t) => t.status === QrTagStatus.SUSPENDED);
 
-  let isExpired = false;
-  let needsTagSelection = false;
-
-  // 3. Dynamic Entitlement & Expiration Check
-  if (
-    subscription.tier === SubscriptionTier.PLUS &&
-    subscription.expiresAt &&
-    subscription.expiresAt < now
-  ) {
-    isExpired = true;
-    const basicConfig = PLAN_CONFIGS[SubscriptionTier.BASIC];
-
-    // If user has more tags than Basic allows (2), flag for tag selection
-    if (assignedTags.length > basicConfig.maxActiveTags) {
-      needsTagSelection = true;
-    }
-
-    // Reset subscription row to BASIC with permanent lifetime calling
-    subscription = await prisma.subscription.update({
-      where: { userId },
-      data: {
-        tier: SubscriptionTier.BASIC,
-        maxActiveTags: basicConfig.maxActiveTags,
-        hasWhatsappAlerts: basicConfig.hasWhatsappAlerts,
-        hasAnalytics: basicConfig.hasAnalytics,
-        expiresAt: null,
-      },
-    });
-  } else if (
-    subscription.tier === SubscriptionTier.BASIC &&
-    assignedTags.length > subscription.maxActiveTags
-  ) {
-    // Basic user with more than 2 assigned tags
-    needsTagSelection = true;
-  }
-
-  // Derive status cleanly without database status column drift
-  const derivedStatus =
-    subscription.tier === SubscriptionTier.PLUS
-      ? subscription.expiresAt && subscription.expiresAt >= now
-        ? "ACTIVE"
-        : "EXPIRED"
-      : "ACTIVE";
-
   // Calculate days remaining if expiresAt is set
   let daysRemaining: number | null = null;
   if (subscription.expiresAt && subscription.expiresAt > now) {
@@ -135,22 +253,47 @@ export const getUserSubscription = async (userId: string) => {
     subscription: {
       id: subscription.id,
       tier: subscription.tier,
-      status: derivedStatus,
+      planId: subscription.planId,
+      plan: subscription.plan
+        ? {
+            id: subscription.plan.id,
+            code: subscription.plan.code,
+            name: subscription.plan.name,
+            tagQuota: subscription.plan.tagQuota,
+            durationDays: subscription.plan.durationDays,
+          }
+        : null,
+      status: callingStatus.status,
       maxActiveTags: subscription.maxActiveTags,
-      hasLifetimeCalling: true,
+      hasLifetimeCalling: false,
       hasWhatsappAlerts: subscription.hasWhatsappAlerts,
       hasAnalytics: subscription.hasAnalytics,
+      isFupFlagged: callingStatus.isFupFlagged,
+      canMakeCalls: callingStatus.canMakeCalls,
+      whatsappOnly: callingStatus.whatsappOnly,
       startsAt: subscription.startsAt,
       expiresAt: subscription.expiresAt,
+      gracePeriodDays: subscription.gracePeriodDays ?? 14,
       daysRemaining,
-      isExpired,
+      isExpired: callingStatus.isExpired,
+      isGracePeriod: callingStatus.isGracePeriod,
+      fup: {
+        monthlyUsedSeconds: callingStatus.monthlyUsedSeconds,
+        monthlyFupLimitSeconds: callingStatus.monthlyFupLimitSeconds,
+        monthlyUsedMinutes: Math.round((callingStatus.monthlyUsedSeconds / 60) * 10) / 10,
+        isFlagged: callingStatus.isFupFlagged,
+        hardCallLimitSeconds: callingStatus.hardCallLimitSeconds,
+      },
+      resumptionPrompt: callingStatus.isExpired
+        ? "Calls stopped. Renew your Plus Plan for ₹149 to resume call masking."
+        : null,
     },
     tags: {
       activeCount: assignedTags.length,
       suspendedCount: suspendedTags.length,
       totalCount: pairedTags.length,
       maxLimit: subscription.maxActiveTags,
-      needsTagSelection,
+      needsTagSelection: assignedTags.length > subscription.maxActiveTags,
       assigned: assignedTags.map((t) => ({
         id: t.id,
         tagNumber: t.tagNumber,
@@ -166,7 +309,88 @@ export const getUserSubscription = async (userId: string) => {
         resource: t.resource,
       })),
     },
-    catalog: Object.values(PACK_CATALOG),
+    catalog: [PACK_CATALOG[PurchasePackType.PLUS_149]],
+  };
+};
+
+/**
+ * Customer telephony usage endpoint.
+ * Returns current period usage, call totals, actual & billed seconds, and allowance structure.
+ * Internal provider costs and sensitive caller details are never exposed to customers.
+ */
+export const getUserTelephonyUsage = async (userId: string) => {
+  const now = new Date();
+  const startsAt = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+  const endsAt = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+
+  // Find all calls in current period linked directly to userId or via user's resources
+  const calls = await prisma.communicationCall.findMany({
+    where: {
+      OR: [
+        { userId },
+        { session: { resource: { userId } } },
+      ],
+      createdAt: {
+        gte: startsAt,
+        lte: endsAt,
+      },
+    },
+    select: {
+      id: true,
+      status: true,
+      actualDurationSeconds: true,
+      billedDurationSeconds: true,
+      durationSec: true,
+      connectedAt: true,
+    },
+  });
+
+  const totalCalls = calls.length;
+  let connectedCalls = 0;
+  let actualSeconds = 0;
+  let billedSeconds = 0;
+
+  for (const call of calls) {
+    const isConnected =
+      call.status === "CONNECTED" ||
+      call.status === "COMPLETED" ||
+      call.connectedAt != null;
+
+    if (isConnected) {
+      connectedCalls++;
+    }
+
+    const actual =
+      call.actualDurationSeconds > 0
+        ? call.actualDurationSeconds
+        : (call.durationSec ?? 0);
+    actualSeconds += actual;
+
+    const billed =
+      call.billedDurationSeconds > 0
+        ? call.billedDurationSeconds
+        : isConnected
+        ? Math.ceil(actual / 60) * 60
+        : 0;
+    billedSeconds += billed;
+  }
+
+  return {
+    period: {
+      startsAt: startsAt.toISOString(),
+      endsAt: endsAt.toISOString(),
+    },
+    usage: {
+      totalCalls,
+      connectedCalls,
+      actualSeconds,
+      billedSeconds,
+    },
+    allowance: {
+      limitSeconds: null,
+      usedSeconds: billedSeconds,
+      remainingSeconds: null,
+    },
   };
 };
 
@@ -605,6 +829,8 @@ export const activatePackPurchase = async (
         maxActiveTags: plusConfig.maxActiveTags,
         hasWhatsappAlerts: plusConfig.hasWhatsappAlerts,
         hasAnalytics: plusConfig.hasAnalytics,
+        isFupFlagged: false,
+        gracePeriodDays: plusConfig.gracePeriodDays,
         startsAt: now,
         expiresAt: newExpiresAt,
       },
@@ -613,6 +839,8 @@ export const activatePackPurchase = async (
         maxActiveTags: plusConfig.maxActiveTags,
         hasWhatsappAlerts: plusConfig.hasWhatsappAlerts,
         hasAnalytics: plusConfig.hasAnalytics,
+        isFupFlagged: false,
+        gracePeriodDays: plusConfig.gracePeriodDays,
         expiresAt: newExpiresAt,
       },
     });
@@ -662,13 +890,33 @@ export const getUserPurchases = async (userId: string) => {
  * Transactionally activates or extends a user's PLUS subscription for a specified duration in months.
  * Restores any previously SUSPENDED tags back to ASSIGNED (up to maxActiveTags limit).
  */
+/**
+ * Activates or extends a user's subscription based on a database-backed Plan.
+ * Sets maxActiveTags and durationDays from the resolved Plan.
+ * Restores any previously SUSPENDED tags back to ASSIGNED (up to maxActiveTags limit).
+ */
 export const activateUserPlusSubscription = async (
   tx: Prisma.TransactionClient,
   userId: string,
-  durationMonths: number,
-  source: string = "included_with_order"
+  durationMonths?: number,
+  source: string = "included_with_order",
+  planId?: string | null
 ) => {
   const now = new Date();
+
+  // 1. Resolve Plan from database (default to STARTER)
+  let plan = null;
+  if (planId) {
+    plan = await tx.plan.findUnique({ where: { id: planId } });
+  }
+  if (!plan) {
+    plan = await tx.plan.findUnique({ where: { code: "STARTER" } });
+  }
+
+  const tagQuota = plan?.tagQuota ?? 4;
+  const durationDays = plan?.durationDays ?? (durationMonths && durationMonths > 0 ? durationMonths * 30 : 365);
+  const resolvedPlanId = plan?.id ?? null;
+
   const currentSub = await tx.subscription.findUnique({
     where: { userId },
   });
@@ -683,8 +931,7 @@ export const activateUserPlusSubscription = async (
     baseDate = currentSub.expiresAt;
   }
 
-  const newExpiresAt = new Date(baseDate);
-  newExpiresAt.setMonth(newExpiresAt.getMonth() + (durationMonths > 0 ? durationMonths : 12));
+  const newExpiresAt = new Date(baseDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
 
   const plusConfig = PLAN_CONFIGS[SubscriptionTier.PLUS];
 
@@ -692,19 +939,25 @@ export const activateUserPlusSubscription = async (
     where: { userId },
     create: {
       userId,
+      planId: resolvedPlanId,
       tier: SubscriptionTier.PLUS,
-      maxActiveTags: plusConfig.maxActiveTags,
+      maxActiveTags: tagQuota,
       hasWhatsappAlerts: plusConfig.hasWhatsappAlerts,
       hasAnalytics: plusConfig.hasAnalytics,
+      isFupFlagged: false,
+      gracePeriodDays: plusConfig.gracePeriodDays,
       startsAt: now,
       expiresAt: newExpiresAt,
       source,
     },
     update: {
+      planId: resolvedPlanId,
       tier: SubscriptionTier.PLUS,
-      maxActiveTags: plusConfig.maxActiveTags,
+      maxActiveTags: tagQuota,
       hasWhatsappAlerts: plusConfig.hasWhatsappAlerts,
       hasAnalytics: plusConfig.hasAnalytics,
+      isFupFlagged: false,
+      gracePeriodDays: plusConfig.gracePeriodDays,
       expiresAt: newExpiresAt,
       source,
     },
@@ -715,7 +968,7 @@ export const activateUserPlusSubscription = async (
       resource: { userId, active: true },
       status: QrTagStatus.SUSPENDED,
     },
-    take: plusConfig.maxActiveTags,
+    take: tagQuota,
   });
 
   for (const tag of suspendedTags) {
@@ -726,4 +979,13 @@ export const activateUserPlusSubscription = async (
   }
 
   return updatedSub;
+};
+
+export const activateUserPlan = async (
+  tx: Prisma.TransactionClient,
+  userId: string,
+  planId?: string | null,
+  source: string = "included_with_order"
+) => {
+  return await activateUserPlusSubscription(tx, userId, undefined, source, planId);
 };

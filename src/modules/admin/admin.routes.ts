@@ -17,7 +17,10 @@ import {
   adminSendTestMailController,
   adminTriggerStockCheckController,
 } from "./admin.controllers.js";
-import { adminOverviewController } from "./overview/admin.overview.controllers.js";
+import {
+  adminOverviewController,
+  adminTelephonyOverviewController,
+} from "./overview/admin.overview.controllers.js";
 
 const router = express.Router();
 
@@ -48,6 +51,13 @@ router.use("/orders", adminOrderRoutes);
  * Consolidated operational overview: usage, call costs, activation, plus, and inventory.
  */
 router.get("/overview", adminOverviewController);
+
+/**
+ * GET /api/admin/overview/telephony?period=today|7d|30d|month|all&provider=EDESY
+ * Comprehensive telephony usage, billing exposure, unit economics & net margins.
+ */
+router.get("/overview/telephony", adminTelephonyOverviewController);
+router.get("/telephony/analytics", adminTelephonyOverviewController);
 
 // ---------------------------------------------------------------------------
 // Dashboard

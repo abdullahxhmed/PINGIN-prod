@@ -114,6 +114,7 @@ export const verifyAndClaimPurchase = async (
     const order = await tx.order.findUnique({
       where: { orderNumber },
       include: {
+        items: true,
         subscriptionGrants: true,
         purchaseClaim: true,
       },
@@ -196,8 +197,13 @@ export const verifyAndClaimPurchase = async (
         },
       });
 
-      // 6. Retroactive Pairing Evaluation:
-      // Did this user already pair an eligible QR tag on or after this grant's creation?
+      // 6. Activation Evaluation:
+      // If the order has no physical tags to scan (digital order) or user already has an eligible paired tag:
+      const hasPhysicalTags = order.items.some((item) => {
+        const snap = item.productSnapshot as any;
+        return snap?.components?.some((c: any) => c.componentType === "SERIALIZED_QR_TAG");
+      });
+
       const eligiblePairing = await tx.qrTag.findFirst({
         where: {
           resource: { userId: claimingUserId, active: true },
@@ -207,19 +213,19 @@ export const verifyAndClaimPurchase = async (
         orderBy: { assignedAt: "asc" },
       });
 
-      if (eligiblePairing) {
+      if (!hasPhysicalTags || eligiblePairing) {
         // Redeem grant immediately!
         const redeemed = await tx.subscriptionGrant.updateMany({
           where: { id: grant.id, userId: claimingUserId, status: GrantStatus.PENDING_PAIRING },
           data: {
             status: GrantStatus.ACTIVATED,
             activatedAt: now,
-            triggeringQrTagId: eligiblePairing.id,
+            triggeringQrTagId: eligiblePairing?.id ?? null,
           },
         });
 
         if (redeemed.count === 1) {
-          await activateUserPlusSubscription(tx, claimingUserId, grant.plusDurationMonths, "included_with_order");
+          await activateUserPlusSubscription(tx, claimingUserId, grant.plusDurationMonths, "included_with_order", grant.planId);
           activatedRetroactively = true;
         }
       }

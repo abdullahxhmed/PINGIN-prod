@@ -1,0 +1,3 @@
+-- AlterEnum
+ALTER TYPE "QrTagOrigin" ADD VALUE IF NOT EXISTS 'DIGITAL';
+

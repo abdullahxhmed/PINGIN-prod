@@ -4,6 +4,7 @@ import {CommunicationSessionType} from "@prisma/client";
 import crypto from "crypto"
 import { edesyService } from "../../integrations/edesy.service.js";
 import { encryptPhoneNumber, decryptPhoneNumber, decryptData, isEncrypted, generatePhoneLookup } from "../../utils/data-protection.js";
+import { checkUserSubscriptionCallingStatus } from "../subscriptions/subscriptions.services.js";
 
 const getContact = async (contactToken: string) => {
     const contactDetails = await prisma.contactLink.findUnique({
@@ -18,7 +19,18 @@ const getContact = async (contactToken: string) => {
             id: true,
             resource:{
                 select:{
+                    id: true,
+                    userId: true,
                     name:true,
+                    qrTag: {
+                        select: {
+                            id: true,
+                            tagNumber: true,
+                            status: true,
+                            isPaused: true,
+                            pausedAt: true,
+                        },
+                    },
                     vehicleDetail:{
                         select:{
                             registrationNum:true,
@@ -33,12 +45,29 @@ const getContact = async (contactToken: string) => {
     if(!contactDetails)
         throw new NotFoundError("Resource not found");
 
+    const activeTag = contactDetails.resource.qrTag?.find(
+        (t) => t.status === "ASSIGNED"
+    ) || contactDetails.resource.qrTag?.[0] || null;
+
+    const isPaused = Boolean(activeTag?.isPaused);
     const hasRegistrationNumber = !!contactDetails.resource.vehicleDetail?.registrationNum;
 
+    // Check owner subscription calling and WhatsApp-only fallback status
+    const callingStatus = await checkUserSubscriptionCallingStatus(contactDetails.resource.userId);
+
     return {
-        id:contactDetails.id,
+        id: contactDetails.id,
         name: decryptData(contactDetails.resource.name),
         hasRegistrationNumber,
+        isPaused,
+        pausedAt: activeTag?.pausedAt ?? null,
+        tagNumber: activeTag?.tagNumber ?? null,
+        tagStatus: activeTag?.status ?? null,
+        canCall: !isPaused && callingStatus.canMakeCalls,
+        whatsappOnly: callingStatus.whatsappOnly,
+        subscriptionStatus: callingStatus.status,
+        isGracePeriod: callingStatus.isGracePeriod,
+        resumptionRequired: callingStatus.isExpired,
         vehicleDetails:{
             colour: contactDetails.resource.vehicleDetail?.vehicleColour
         }
@@ -104,6 +133,14 @@ const getCommunicationContact = async (token: string) => {
             resourceId: true,
             resource: {
                 select: {
+                    qrTag: {
+                        select: {
+                            id: true,
+                            tagNumber: true,
+                            status: true,
+                            isPaused: true,
+                        },
+                    },
                     user: {
                         select: {
                             id: true,
@@ -126,7 +163,26 @@ const getCommunicationContact = async (token: string) => {
         throw new NotFoundError("Contact link not found");
     }
 
+    const activeTag = contactLink.resource.qrTag?.find(
+        (t) => t.status === "ASSIGNED"
+    ) || contactLink.resource.qrTag?.[0];
+
+    if (activeTag?.isPaused) {
+        throw new ForbiddenError(
+            "This QR tag is currently paused by the owner. Calls are temporarily disabled."
+        );
+    }
+
     const user = contactLink.resource.user;
+
+    // Check owner subscription calling and 14-day grace period status
+    const callingStatus = await checkUserSubscriptionCallingStatus(user.id);
+    if (!callingStatus.canMakeCalls) {
+        throw new ForbiddenError(
+            callingStatus.message || "The subscription for this QR tag has expired. Direct phone calls are suspended. Only WhatsApp notifications are available."
+        );
+    }
+
     let contactEndpoint = user?.contactEndpoint;
 
     // Resilient fallback: If contactEndpoint row is missing, check user's mobileNumber
@@ -165,8 +221,13 @@ const getCommunicationContact = async (token: string) => {
     return {
         contactLinkId: contactLink.id,
         resourceId: contactLink.resourceId,
+        ownerUserId: user.id,
         contactEndpointId,
         contactEndpointPhoneNumber: decryptedOwnerPhone,
+        isPaused: Boolean(activeTag?.isPaused),
+        tagNumber: activeTag?.tagNumber ?? null,
+        activeTagId: activeTag?.id ?? null,
+        hardCallLimitSeconds: callingStatus.hardCallLimitSeconds,
     };
 };
 
@@ -187,6 +248,13 @@ const verifyRegistrationNum = async (token:string, submittedRegNo: string) => {
         select: {
             resource:{
                 select:{
+                    userId: true,
+                    qrTag: {
+                        select: {
+                            status: true,
+                            isPaused: true,
+                        },
+                    },
                     vehicleDetail:{
                         select:{
                             registrationNum: true
@@ -196,6 +264,26 @@ const verifyRegistrationNum = async (token:string, submittedRegNo: string) => {
             },
         },
     });
+
+    const activeTag = contactDetails?.resource.qrTag?.find(
+        (t) => t.status === "ASSIGNED"
+    ) || contactDetails?.resource.qrTag?.[0];
+
+    if (activeTag?.isPaused) {
+        throw new ForbiddenError(
+            "This QR tag is currently paused by the owner. Calls are temporarily disabled."
+        );
+    }
+
+    if (contactDetails?.resource.userId) {
+        const callingStatus = await checkUserSubscriptionCallingStatus(contactDetails.resource.userId);
+        if (!callingStatus.canMakeCalls) {
+            throw new ForbiddenError(
+                callingStatus.message || "The subscription for this QR tag has expired. Direct phone calls are suspended. Only WhatsApp notifications are available."
+            );
+        }
+    }
+
     const existingRegNo = contactDetails?.resource.vehicleDetail?.registrationNum;
 
     if(!existingRegNo)
