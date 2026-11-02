@@ -98,7 +98,7 @@ export class EdesyClient {
     const cleanBaseUrl = this.baseUrl.replace(/\/+$/, "");
     const url = cleanBaseUrl.endsWith("/v1")
       ? `${cleanBaseUrl}/masking/calls`
-      : `${cleanBaseUrl}/masking/calls`;
+      : `${cleanBaseUrl}/v1/masking/calls`;
 
     const response = await fetch(
       url,
@@ -112,12 +112,23 @@ export class EdesyClient {
       }
     );
 
-    const body = await response.json();
+    let body: any = null;
+    const rawText = await response.text();
+    try {
+      body = JSON.parse(rawText);
+    } catch {
+      body = { message: rawText };
+    }
 
     if (!response.ok) {
       console.error("Edesy API error response:", { status: response.status, body });
+      const errorMessage =
+        body?.error?.message ??
+        body?.message ??
+        (typeof body === "string" ? body : "Edesy API request failed");
+
       throw new EdesyApiError(
-        body?.error?.message ?? "Edesy API request failed",
+        errorMessage,
         response.status,
         body?.error?.code
       );
